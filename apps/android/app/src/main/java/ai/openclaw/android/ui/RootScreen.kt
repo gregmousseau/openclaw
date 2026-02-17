@@ -389,7 +389,6 @@ private fun CanvasView(viewModel: MainViewModel, modifier: Modifier = Modifier) 
               request: WebResourceRequest,
               error: WebResourceError,
             ) {
-              if (!isDebuggable) return
               if (!request.isForMainFrame) return
               if (isDebuggable) {
                 Log.e("OpenClawWebView", "onReceivedError: ${error.errorCode} ${error.description} ${request.url}")
@@ -404,7 +403,6 @@ private fun CanvasView(viewModel: MainViewModel, modifier: Modifier = Modifier) 
               request: WebResourceRequest,
               errorResponse: WebResourceResponse,
             ) {
-              if (!isDebuggable) return
               if (!request.isForMainFrame) return
               if (isDebuggable) {
                 Log.e(
