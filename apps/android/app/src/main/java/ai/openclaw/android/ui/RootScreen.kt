@@ -235,7 +235,7 @@ fun RootScreen(viewModel: MainViewModel) {
   ) { innerPadding ->
     when (selectedTab) {
       TAB_SCREEN -> {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
           CanvasView(viewModel = viewModel, modifier = Modifier.fillMaxSize())
         }
       }
