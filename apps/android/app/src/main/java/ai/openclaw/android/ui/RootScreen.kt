@@ -28,6 +28,9 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -244,15 +247,19 @@ fun RootScreen(viewModel: MainViewModel) {
         }
       }
       TAB_VOICE -> {
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         VoiceScreen(
           viewModel = viewModel,
-          modifier = Modifier.padding(innerPadding).fillMaxSize(),
+          modifier = Modifier.fillMaxSize(),
+          contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp + navBottom),
         )
       }
       TAB_SETTINGS -> {
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         SettingsSheet(
           viewModel = viewModel,
-          modifier = Modifier.padding(innerPadding).fillMaxSize(),
+          modifier = Modifier.fillMaxSize(),
+          contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp + navBottom),
           onScanQR = { showQRScanner = true },
         )
       }
