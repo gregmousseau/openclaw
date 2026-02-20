@@ -262,13 +262,11 @@ fun RootScreen(viewModel: MainViewModel) {
     }
   }
 
-  // Camera flash must be in a Popup to render above the WebView.
-  Popup(alignment = Alignment.Center, properties = PopupProperties(focusable = false)) {
-    CameraFlashOverlay(token = cameraFlashToken, modifier = Modifier.fillMaxSize())
-  }
-
-  // Overlays on Screen tab only
+  // Overlays on Screen tab only (camera flash MUST be here — fillMaxSize popup blocks nav taps)
   if (selectedTab == TAB_SCREEN) {
+    Popup(alignment = Alignment.Center, properties = PopupProperties(focusable = false)) {
+      CameraFlashOverlay(token = cameraFlashToken, modifier = Modifier.fillMaxSize())
+    }
     Popup(alignment = Alignment.TopStart, properties = PopupProperties(focusable = false)) {
       StatusPill(
         gateway = gatewayState,
