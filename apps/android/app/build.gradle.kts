@@ -134,6 +134,9 @@ dependencies {
   implementation("androidx.camera:camera-video:1.5.2")
   implementation("androidx.camera:camera-view:1.5.2")
 
+  // QR code scanning (ML Kit)
+  implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
   // Unicast DNS-SD (Wide-Area Bonjour) for tailnet discovery domains.
   implementation("dnsjava:dnsjava:3.6.4")
 

@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
@@ -63,7 +64,7 @@ import ai.openclaw.android.VoiceWakeMode
 import ai.openclaw.android.WakeWords
 
 @Composable
-fun SettingsSheet(viewModel: MainViewModel, modifier: Modifier = Modifier, contentPadding: PaddingValues = PaddingValues(16.dp)) {
+fun SettingsSheet(viewModel: MainViewModel, modifier: Modifier = Modifier, contentPadding: PaddingValues = PaddingValues(16.dp), onScanQR: () -> Unit = {}) {
   val context = LocalContext.current
   val instanceId by viewModel.instanceId.collectAsState()
   val displayName by viewModel.displayName.collectAsState()
@@ -392,6 +393,15 @@ fun SettingsSheet(viewModel: MainViewModel, modifier: Modifier = Modifier, conte
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
       }
+    }
+
+    item {
+      ListItem(
+        headlineContent = { Text("Scan QR Code") },
+        supportingContent = { Text("Point at a gateway QR code to connect instantly") },
+        leadingContent = { Icon(Icons.Default.QrCodeScanner, contentDescription = null) },
+        modifier = Modifier.clickable { onScanQR() },
+      )
     }
 
     item { HorizontalDivider() }

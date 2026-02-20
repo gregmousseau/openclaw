@@ -77,7 +77,9 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import ai.openclaw.android.node.CanvasController
 import ai.openclaw.android.CameraHudKind
+import android.net.Uri
 import ai.openclaw.android.MainViewModel
+import ai.openclaw.android.NodeForegroundService
 
 private const val TAB_SCREEN = 0
 private const val TAB_VOICE = 1
@@ -89,6 +91,7 @@ fun RootScreen(viewModel: MainViewModel) {
   var selectedTab by rememberSaveable { mutableIntStateOf(TAB_SCREEN) }
   var showChatSheet by remember { mutableStateOf(false) }
   var showDisconnectDialog by remember { mutableStateOf(false) }
+  var showQRScanner by remember { mutableStateOf(false) }
   val chatSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   val safeOverlayInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
   val context = LocalContext.current
@@ -252,7 +255,8 @@ fun RootScreen(viewModel: MainViewModel) {
         SettingsSheet(
           viewModel = viewModel,
           modifier = Modifier.padding(top = innerPadding.calculateTopPadding()).fillMaxSize(),
-          contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + navBarBottom)
+          contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + navBarBottom),
+          onScanQR = { showQRScanner = true },
         )
       }
     }
@@ -375,6 +379,49 @@ fun RootScreen(viewModel: MainViewModel) {
     ) {
       ChatSheet(viewModel = viewModel)
     }
+  }
+
+  if (showQRScanner) {
+    Popup(alignment = Alignment.Center, properties = PopupProperties(focusable = true)) {
+      QRScannerScreen(
+        onResult = { url ->
+          showQRScanner = false
+          handleQRResult(url, viewModel, context)
+          selectedTab = TAB_SCREEN
+        },
+        onDismiss = { showQRScanner = false },
+      )
+    }
+  }
+}
+
+private fun handleQRResult(url: String, viewModel: MainViewModel, context: android.content.Context) {
+  try {
+    val uri = Uri.parse(url)
+    val host: String
+    val port: Int
+    val token: String
+
+    if (uri.scheme == "openclaw") {
+      // openclaw://connect?host=...&port=...&token=...
+      host = uri.getQueryParameter("host") ?: return
+      port = uri.getQueryParameter("port")?.toIntOrNull() ?: return
+      token = uri.getQueryParameter("token") ?: ""
+    } else {
+      // http(s)://host:port or plain host:port
+      host = uri.host ?: return
+      port = if (uri.port > 0) uri.port else 18789
+      token = uri.getQueryParameter("token") ?: ""
+    }
+
+    viewModel.setManualHost(host)
+    viewModel.setManualPort(port)
+    if (token.isNotEmpty()) viewModel.setGatewayToken(token)
+    viewModel.setManualEnabled(true)
+    NodeForegroundService.start(context)
+    viewModel.connectManual()
+  } catch (_: Exception) {
+    // Malformed URL — silently ignore
   }
 }
 
