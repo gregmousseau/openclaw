@@ -38,6 +38,9 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -47,6 +50,7 @@ import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
@@ -55,8 +59,10 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,12 +78,17 @@ import ai.openclaw.android.node.CanvasController
 import ai.openclaw.android.CameraHudKind
 import ai.openclaw.android.MainViewModel
 
+private const val TAB_SCREEN = 0
+private const val TAB_VOICE = 1
+private const val TAB_SETTINGS = 2
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RootScreen(viewModel: MainViewModel) {
-  var sheet by remember { mutableStateOf<Sheet?>(null) }
+  var selectedTab by rememberSaveable { mutableIntStateOf(TAB_SCREEN) }
+  var showChatSheet by remember { mutableStateOf(false) }
   var showDisconnectDialog by remember { mutableStateOf(false) }
-  val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+  val chatSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   val safeOverlayInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
   val context = LocalContext.current
   val serverName by viewModel.serverName.collectAsState()
@@ -100,7 +111,6 @@ fun RootScreen(viewModel: MainViewModel) {
     }
   val activity =
     remember(cameraHud, screenRecordActive, isForeground, statusText, voiceWakeStatusText) {
-      // Status pill owns transient activity state so it doesn't overlap the connection indicator.
       if (!isForeground) {
         return@remember StatusActivity(
           title = "Foreground required",
@@ -124,7 +134,6 @@ fun RootScreen(viewModel: MainViewModel) {
           contentDescription = "Approval pending",
         )
       }
-      // Avoid duplicating the primary gateway status ("Connecting…") in the activity slot.
 
       if (screenRecordActive) {
         return@remember StatusActivity(
@@ -200,8 +209,43 @@ fun RootScreen(viewModel: MainViewModel) {
     ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
       PackageManager.PERMISSION_GRANTED
 
-  Box(modifier = Modifier.fillMaxSize()) {
-    CanvasView(viewModel = viewModel, modifier = Modifier.fillMaxSize())
+  Scaffold(
+    bottomBar = {
+      NavigationBar {
+        NavigationBarItem(
+          selected = selectedTab == TAB_SCREEN,
+          onClick = { selectedTab = TAB_SCREEN },
+          icon = { Icon(Icons.AutoMirrored.Filled.ScreenShare, contentDescription = "Screen") },
+          label = { Text("Screen") },
+        )
+        NavigationBarItem(
+          selected = selectedTab == TAB_VOICE,
+          onClick = { selectedTab = TAB_VOICE },
+          icon = { Icon(Icons.Default.Mic, contentDescription = "Voice") },
+          label = { Text("Voice") },
+        )
+        NavigationBarItem(
+          selected = selectedTab == TAB_SETTINGS,
+          onClick = { selectedTab = TAB_SETTINGS },
+          icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
+          label = { Text("Settings") },
+        )
+      }
+    },
+  ) { innerPadding ->
+    when (selectedTab) {
+      TAB_SCREEN -> {
+        Box(modifier = Modifier.fillMaxSize()) {
+          CanvasView(viewModel = viewModel, modifier = Modifier.fillMaxSize())
+        }
+      }
+      TAB_VOICE -> {
+        VoiceScreen(viewModel = viewModel, modifier = Modifier.padding(innerPadding))
+      }
+      TAB_SETTINGS -> {
+        SettingsSheet(viewModel = viewModel, modifier = Modifier.padding(innerPadding))
+      }
+    }
   }
 
   // Camera flash must be in a Popup to render above the WebView.
@@ -209,70 +253,66 @@ fun RootScreen(viewModel: MainViewModel) {
     CameraFlashOverlay(token = cameraFlashToken, modifier = Modifier.fillMaxSize())
   }
 
-  // Keep the overlay buttons above the WebView canvas (AndroidView), otherwise they may not receive touches.
-  Popup(alignment = Alignment.TopStart, properties = PopupProperties(focusable = false)) {
-    StatusPill(
-      gateway = gatewayState,
-      voiceEnabled = voiceEnabled,
-      activity = activity,
-      onClick = {
-        if (gatewayState == GatewayState.Connected) {
-          showDisconnectDialog = true
-        } else {
-          sheet = Sheet.Settings
-        }
-      },
-      modifier = Modifier.windowInsetsPadding(safeOverlayInsets).padding(start = 12.dp, top = 12.dp),
-    )
-  }
-
-  Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = false)) {
-    Column(
-      modifier = Modifier.windowInsetsPadding(safeOverlayInsets).padding(end = 12.dp, top = 12.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
-      horizontalAlignment = Alignment.End,
-    ) {
-      OverlayIconButton(
-        onClick = { sheet = Sheet.Chat },
-        icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Chat") },
-      )
-
-      // Talk mode gets a dedicated side bubble instead of burying it in settings.
-      val baseOverlay = overlayContainerColor()
-      val talkContainer =
-        lerp(
-          baseOverlay,
-          seamColor.copy(alpha = baseOverlay.alpha),
-          if (talkEnabled) 0.35f else 0.22f,
-        )
-      val talkContent = if (talkEnabled) seamColor else overlayIconColor()
-      OverlayIconButton(
+  // Overlays on Screen tab only
+  if (selectedTab == TAB_SCREEN) {
+    Popup(alignment = Alignment.TopStart, properties = PopupProperties(focusable = false)) {
+      StatusPill(
+        gateway = gatewayState,
+        voiceEnabled = voiceEnabled,
+        activity = activity,
         onClick = {
-          val next = !talkEnabled
-          if (next) {
-            val micOk =
-              ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
-            if (!micOk) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            viewModel.setTalkEnabled(true)
+          if (gatewayState == GatewayState.Connected) {
+            showDisconnectDialog = true
           } else {
-            viewModel.setTalkEnabled(false)
+            selectedTab = TAB_SETTINGS
           }
         },
-        containerColor = talkContainer,
-        contentColor = talkContent,
-        icon = {
-          Icon(
-            Icons.Default.RecordVoiceOver,
-            contentDescription = "Talk Mode",
-          )
-        },
+        modifier = Modifier.windowInsetsPadding(safeOverlayInsets).padding(start = 12.dp, top = 12.dp),
       )
+    }
 
-      OverlayIconButton(
-        onClick = { sheet = Sheet.Settings },
-        icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-      )
+    Popup(alignment = Alignment.TopEnd, properties = PopupProperties(focusable = false)) {
+      Column(
+        modifier = Modifier.windowInsetsPadding(safeOverlayInsets).padding(end = 12.dp, top = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.End,
+      ) {
+        OverlayIconButton(
+          onClick = { showChatSheet = true },
+          icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Chat") },
+        )
+
+        val baseOverlay = overlayContainerColor()
+        val talkContainer =
+          lerp(
+            baseOverlay,
+            seamColor.copy(alpha = baseOverlay.alpha),
+            if (talkEnabled) 0.35f else 0.22f,
+          )
+        val talkContent = if (talkEnabled) seamColor else overlayIconColor()
+        OverlayIconButton(
+          onClick = {
+            val next = !talkEnabled
+            if (next) {
+              val micOk =
+                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                  PackageManager.PERMISSION_GRANTED
+              if (!micOk) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+              viewModel.setTalkEnabled(true)
+            } else {
+              viewModel.setTalkEnabled(false)
+            }
+          },
+          containerColor = talkContainer,
+          contentColor = talkContent,
+          icon = {
+            Icon(
+              Icons.Default.RecordVoiceOver,
+              contentDescription = "Talk Mode",
+            )
+          },
+        )
+      }
     }
   }
 
@@ -310,7 +350,7 @@ fun RootScreen(viewModel: MainViewModel) {
       dismissButton = {
         TextButton(onClick = {
           showDisconnectDialog = false
-          sheet = Sheet.Settings
+          selectedTab = TAB_SETTINGS
         }) {
           Text("Settings")
         }
@@ -318,23 +358,14 @@ fun RootScreen(viewModel: MainViewModel) {
     )
   }
 
-  val currentSheet = sheet
-  if (currentSheet != null) {
+  if (showChatSheet) {
     ModalBottomSheet(
-      onDismissRequest = { sheet = null },
-      sheetState = sheetState,
+      onDismissRequest = { showChatSheet = false },
+      sheetState = chatSheetState,
     ) {
-      when (currentSheet) {
-        Sheet.Chat -> ChatSheet(viewModel = viewModel)
-        Sheet.Settings -> SettingsSheet(viewModel = viewModel)
-      }
+      ChatSheet(viewModel = viewModel)
     }
   }
-}
-
-private enum class Sheet {
-  Chat,
-  Settings,
 }
 
 @Composable
@@ -367,7 +398,6 @@ private fun CanvasView(viewModel: MainViewModel, modifier: Modifier = Modifier) 
     factory = {
       WebView(context).apply {
         settings.javaScriptEnabled = true
-        // Some embedded web UIs (incl. the "background website") use localStorage/sessionStorage.
         settings.domStorageEnabled = true
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
@@ -393,8 +423,6 @@ private fun CanvasView(viewModel: MainViewModel, modifier: Modifier = Modifier) 
               if (isDebuggable) {
                 Log.e("OpenClawWebView", "onReceivedError: ${error.errorCode} ${error.description} ${request.url}")
               }
-              // Fall back to the local scaffold on network errors (gateway offline,
-              // timeout, etc.) instead of showing Chrome's net::ERR page.
               view.loadUrl(CanvasController.SCAFFOLD_ASSET_URL)
             }
 
@@ -410,9 +438,6 @@ private fun CanvasView(viewModel: MainViewModel, modifier: Modifier = Modifier) 
                   "onReceivedHttpError: ${errorResponse.statusCode} ${errorResponse.reasonPhrase} ${request.url}",
                 )
               }
-              // On auth errors (401/403), fall back to the local scaffold instead of
-              // displaying raw JSON error text.  The canvas will be re-navigated
-              // automatically once the gateway session is established.
               if (errorResponse.statusCode == 401 || errorResponse.statusCode == 403) {
                 view.loadUrl(CanvasController.SCAFFOLD_ASSET_URL)
               }
@@ -450,7 +475,6 @@ private fun CanvasView(viewModel: MainViewModel, modifier: Modifier = Modifier) 
               return false
             }
           }
-        // Use default layer/background; avoid forcing a black fill over WebView content.
 
         val a2uiBridge =
           CanvasA2UIActionBridge { payload ->
