@@ -21,7 +21,7 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
+
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -237,7 +237,6 @@ fun RootScreen(viewModel: MainViewModel) {
       }
     },
   ) { innerPadding ->
-    val navBarBottom = innerPadding.calculateBottomPadding()
     when (selectedTab) {
       TAB_SCREEN -> {
         Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
@@ -247,15 +246,13 @@ fun RootScreen(viewModel: MainViewModel) {
       TAB_VOICE -> {
         VoiceScreen(
           viewModel = viewModel,
-          modifier = Modifier.padding(top = innerPadding.calculateTopPadding()).fillMaxSize(),
-          contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + navBarBottom)
+          modifier = Modifier.padding(innerPadding).fillMaxSize(),
         )
       }
       TAB_SETTINGS -> {
         SettingsSheet(
           viewModel = viewModel,
-          modifier = Modifier.padding(top = innerPadding.calculateTopPadding()).fillMaxSize(),
-          contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + navBarBottom),
+          modifier = Modifier.padding(innerPadding).fillMaxSize(),
           onScanQR = { showQRScanner = true },
         )
       }
