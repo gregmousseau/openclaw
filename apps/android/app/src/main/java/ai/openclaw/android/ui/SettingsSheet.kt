@@ -63,7 +63,7 @@ import ai.openclaw.android.VoiceWakeMode
 import ai.openclaw.android.WakeWords
 
 @Composable
-fun SettingsSheet(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+fun SettingsSheet(viewModel: MainViewModel, modifier: Modifier = Modifier, contentPadding: PaddingValues = PaddingValues(16.dp)) {
   val context = LocalContext.current
   val instanceId by viewModel.instanceId.collectAsState()
   val displayName by viewModel.displayName.collectAsState()
@@ -287,7 +287,7 @@ fun SettingsSheet(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         .fillMaxWidth()
         .fillMaxHeight()
         .imePadding(),
-    contentPadding = PaddingValues(16.dp),
+    contentPadding = contentPadding,
     verticalArrangement = Arrangement.spacedBy(6.dp),
   ) {
     // Order parity: Node → Gateway → Voice → Camera → Messaging → Location → Screen.

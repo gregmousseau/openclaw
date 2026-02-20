@@ -17,7 +17,7 @@ import ai.openclaw.android.MainViewModel
 import ai.openclaw.android.VoiceWakeMode
 
 @Composable
-fun VoiceScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+fun VoiceScreen(viewModel: MainViewModel, modifier: Modifier = Modifier, contentPadding: PaddingValues = PaddingValues(16.dp)) {
   val voiceWakeMode by viewModel.voiceWakeMode.collectAsState()
   val voiceWakeStatusText by viewModel.voiceWakeStatusText.collectAsState()
   val voiceWakeIsListening by viewModel.voiceWakeIsListening.collectAsState()
@@ -26,7 +26,7 @@ fun VoiceScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
   LazyColumn(
     modifier = modifier.fillMaxSize(),
-    contentPadding = PaddingValues(16.dp),
+    contentPadding = contentPadding,
     verticalArrangement = Arrangement.spacedBy(6.dp),
   ) {
     // Status section
