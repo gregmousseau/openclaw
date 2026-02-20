@@ -243,25 +243,15 @@ fun RootScreen(viewModel: MainViewModel) {
       TAB_VOICE -> {
         VoiceScreen(
           viewModel = viewModel,
-          modifier = Modifier.fillMaxSize(),
-          contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
-            top = 16.dp,
-            bottom = 16.dp + innerPadding.calculateBottomPadding()
-          )
+          modifier = Modifier.padding(innerPadding).fillMaxSize(),
+          contentPadding = PaddingValues(16.dp)
         )
       }
       TAB_SETTINGS -> {
         SettingsSheet(
           viewModel = viewModel,
-          modifier = Modifier.fillMaxSize(),
-          contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
-            top = 16.dp,
-            bottom = 16.dp + innerPadding.calculateBottomPadding()
-          )
+          modifier = Modifier.padding(innerPadding).fillMaxSize(),
+          contentPadding = PaddingValues(16.dp)
         )
       }
     }
