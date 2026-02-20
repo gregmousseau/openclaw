@@ -81,6 +81,10 @@ class SecurePrefs(context: Context) {
     )
   val lastDiscoveredStableId: StateFlow<String> = _lastDiscoveredStableId
 
+  private val _gatewayAutoconnect =
+    MutableStateFlow(prefs.getBoolean("gateway.autoconnect", false))
+  val gatewayAutoconnect: StateFlow<Boolean> = _gatewayAutoconnect
+
   private val _canvasDebugStatusEnabled =
     MutableStateFlow(prefs.getBoolean("canvas.debugStatusEnabled", false))
   val canvasDebugStatusEnabled: StateFlow<Boolean> = _canvasDebugStatusEnabled
@@ -150,6 +154,11 @@ class SecurePrefs(context: Context) {
   fun setGatewayToken(value: String) {
     prefs.edit { putString("gateway.manual.token", value) }
     _gatewayToken.value = value
+  }
+
+  fun setGatewayAutoconnect(value: Boolean) {
+    prefs.edit { putBoolean("gateway.autoconnect", value) }
+    _gatewayAutoconnect.value = value
   }
 
   fun setCanvasDebugStatusEnabled(value: Boolean) {

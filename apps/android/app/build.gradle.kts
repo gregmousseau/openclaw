@@ -18,7 +18,7 @@ android {
   }
 
   defaultConfig {
-    applicationId = "ai.openclaw.android"
+    applicationId = "ai.moes.openclaw.greg"
     minSdk = 31
     targetSdk = 36
     versionCode = 202602210

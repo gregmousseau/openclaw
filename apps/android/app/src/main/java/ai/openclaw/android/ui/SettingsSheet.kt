@@ -85,6 +85,7 @@ fun SettingsSheet(viewModel: MainViewModel) {
   val manualPort by viewModel.manualPort.collectAsState()
   val manualTls by viewModel.manualTls.collectAsState()
   val gatewayToken by viewModel.gatewayToken.collectAsState()
+  val gatewayAutoconnect by viewModel.gatewayAutoconnect.collectAsState()
   val canvasDebugStatusEnabled by viewModel.canvasDebugStatusEnabled.collectAsState()
   val statusText by viewModel.statusText.collectAsState()
   val serverName by viewModel.serverName.collectAsState()
@@ -332,6 +333,14 @@ fun SettingsSheet(viewModel: MainViewModel) {
           Text("Disconnect")
         }
       }
+    }
+
+    item {
+      ListItem(
+        headlineContent = { Text("Auto-connect") },
+        supportingContent = { Text("Automatically reconnect to the last trusted gateway on launch.") },
+        trailingContent = { Switch(checked = gatewayAutoconnect, onCheckedChange = viewModel::setGatewayAutoconnect) },
+      )
     }
 
     item { HorizontalDivider() }

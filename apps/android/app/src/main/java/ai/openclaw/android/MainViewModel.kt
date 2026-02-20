@@ -43,6 +43,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   val wakeWords: StateFlow<List<String>> = runtime.wakeWords
   val voiceWakeMode: StateFlow<VoiceWakeMode> = runtime.voiceWakeMode
   val voiceWakeStatusText: StateFlow<String> = runtime.voiceWakeStatusText
+  val lastWakeCommand: StateFlow<String?> = runtime.lastWakeCommand
   val voiceWakeIsListening: StateFlow<Boolean> = runtime.voiceWakeIsListening
   val talkEnabled: StateFlow<Boolean> = runtime.talkEnabled
   val talkStatusText: StateFlow<String> = runtime.talkStatusText
@@ -53,6 +54,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   val manualPort: StateFlow<Int> = runtime.manualPort
   val manualTls: StateFlow<Boolean> = runtime.manualTls
   val gatewayToken: StateFlow<String> = runtime.gatewayToken
+  val gatewayAutoconnect: StateFlow<Boolean> = runtime.gatewayAutoconnect
   val canvasDebugStatusEnabled: StateFlow<Boolean> = runtime.canvasDebugStatusEnabled
 
   val chatSessionKey: StateFlow<String> = runtime.chatSessionKey
@@ -108,6 +110,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   fun setGatewayToken(value: String) {
     runtime.setGatewayToken(value)
+  }
+
+  fun setGatewayAutoconnect(value: Boolean) {
+    runtime.setGatewayAutoconnect(value)
   }
 
   fun setCanvasDebugStatusEnabled(value: Boolean) {

@@ -53,11 +53,15 @@ class NodeRuntime(context: Context) {
 
   private val externalAudioCaptureActive = MutableStateFlow(false)
 
+  private val _lastWakeCommand = MutableStateFlow<String?>(null)
+  val lastWakeCommand: StateFlow<String?> = _lastWakeCommand.asStateFlow()
+
   private val voiceWake: VoiceWakeManager by lazy {
     VoiceWakeManager(
       context = appContext,
       scope = scope,
       onCommand = { command ->
+        _lastWakeCommand.value = command
         nodeSession.sendNodeEvent(
           event = "agent.request",
           payloadJson =
@@ -347,6 +351,7 @@ class NodeRuntime(context: Context) {
   val gatewayToken: StateFlow<String> = prefs.gatewayToken
   fun setGatewayToken(value: String) = prefs.setGatewayToken(value)
   val lastDiscoveredStableId: StateFlow<String> = prefs.lastDiscoveredStableId
+  val gatewayAutoconnect: StateFlow<Boolean> = prefs.gatewayAutoconnect
   val canvasDebugStatusEnabled: StateFlow<Boolean> = prefs.canvasDebugStatusEnabled
 
   private var didAutoConnect = false
@@ -423,6 +428,7 @@ class NodeRuntime(context: Context) {
 
         if (didAutoConnect) return@collect
         if (_isConnected.value) return@collect
+        if (!gatewayAutoconnect.value) return@collect
 
         if (manualEnabled.value) {
           val host = manualHost.value.trim()
@@ -508,6 +514,10 @@ class NodeRuntime(context: Context) {
 
   fun setManualTls(value: Boolean) {
     prefs.setManualTls(value)
+  }
+
+  fun setGatewayAutoconnect(value: Boolean) {
+    prefs.setGatewayAutoconnect(value)
   }
 
   fun setCanvasDebugStatusEnabled(value: Boolean) {

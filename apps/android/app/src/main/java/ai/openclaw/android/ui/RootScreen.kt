@@ -81,6 +81,7 @@ fun RootScreen(viewModel: MainViewModel) {
   val cameraFlashToken by viewModel.cameraFlashToken.collectAsState()
   val screenRecordActive by viewModel.screenRecordActive.collectAsState()
   val isForeground by viewModel.isForeground.collectAsState()
+  val lastWakeCommand by viewModel.lastWakeCommand.collectAsState()
   val voiceWakeStatusText by viewModel.voiceWakeStatusText.collectAsState()
   val talkEnabled by viewModel.talkEnabled.collectAsState()
   val talkStatusText by viewModel.talkStatusText.collectAsState()
@@ -273,6 +274,13 @@ fun RootScreen(viewModel: MainViewModel) {
         isSpeaking = talkIsSpeaking,
       )
     }
+  }
+
+  Popup(alignment = Alignment.TopCenter, properties = PopupProperties(focusable = false)) {
+    WakeWordToast(
+      command = lastWakeCommand,
+      modifier = Modifier.windowInsetsPadding(safeOverlayInsets).padding(top = 64.dp),
+    )
   }
 
   val currentSheet = sheet
