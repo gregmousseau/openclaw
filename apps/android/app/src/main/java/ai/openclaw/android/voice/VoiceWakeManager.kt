@@ -73,6 +73,7 @@ class VoiceWakeManager(
   private var recognizer: SpeechRecognizer? = null
   @Volatile private var recognizerActive = false
   private var lastDispatched: String? = null
+  private var commandJustDispatched = false
   private var stopRequested = false
 
   fun setTriggerWords(words: List<String>) {
@@ -194,11 +195,12 @@ class VoiceWakeManager(
     }
   }
 
-  private fun restartVad() {
+  private fun restartVad(delayMs: Long = 3_000L) {
     if (stopRequested) return
     recognizerActive = false
+    lastDispatched = null  // reset so same phrase can re-trigger
     scope.launch {
-      delay(200) // brief gap before re-arming mic
+      delay(delayMs)
       if (!stopRequested) startVad()
     }
   }
@@ -218,6 +220,7 @@ class VoiceWakeManager(
     val command = VoiceWakeCommandExtractor.extractCommand(text, triggerWords) ?: return
     if (command == lastDispatched) return
     lastDispatched = command
+    commandJustDispatched = true
     scope.launch { onCommand(command) }
     _statusText.value = "Triggered: $command"
   }
@@ -237,12 +240,15 @@ class VoiceWakeManager(
         return
       }
       _statusText.value = "Listening"
-      restartVad()
+      restartVad(delayMs = 2_000L)
     }
     override fun onResults(results: Bundle?) {
       results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
         ?.firstOrNull()?.let(::handleTranscription)
-      restartVad()
+      // After a successful command dispatch wait longer so the user can
+      // interact without the VAD immediately re-arming and cycling again.
+      val delay = if (commandJustDispatched) { commandJustDispatched = false; 15_000L } else 3_000L
+      restartVad(delayMs = delay)
     }
     override fun onPartialResults(partialResults: Bundle?) {
       partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
