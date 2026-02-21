@@ -62,8 +62,8 @@ class VoiceWakeManager(
 
   // RMS 500 is easily crossed by normal speech; background noise rarely exceeds ~150–200
   private val speechRmsThreshold = 500f
-  // 2 consecutive speech frames (~200ms) before triggering — avoids single-frame pops
-  private val speechFramesToTrigger = 2
+  // 1 frame (~100ms) — trigger fast so SR starts while user is still speaking
+  private val speechFramesToTrigger = 1
   // Silence frames before resetting the speech counter
   private val silenceFramesToReset = 5
 
@@ -182,8 +182,8 @@ class VoiceWakeManager(
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+        // No minimum length — let the recognizer process as soon as it has audio.
+        // Setting MINIMUM_LENGTH on a late-starting session causes immediate timeout.
       }
       try {
         r.startListening(intent)   // OEM bing fires here — expected, user is speaking
