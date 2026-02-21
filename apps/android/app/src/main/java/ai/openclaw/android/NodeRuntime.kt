@@ -69,7 +69,7 @@ class NodeRuntime(context: Context) {
               put("message", JsonPrimitive(command))
               put("sessionKey", JsonPrimitive(resolveMainSessionKey()))
               put("thinking", JsonPrimitive(chatThinkingLevel.value))
-              put("deliver", JsonPrimitive(false))
+              put("deliver", JsonPrimitive(true))
             }.toString(),
         )
       },

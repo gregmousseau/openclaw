@@ -75,6 +75,7 @@ class VoiceWakeManager(
       recognizer?.destroy()
       recognizer = null
       // Always restore audio in case we stopped mid-mute
+      audioManager.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_UNMUTE, 0)
       audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
     }
   }
@@ -92,8 +93,9 @@ class VoiceWakeManager(
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
       }
 
-    // Belt-and-suspenders: mute STREAM_MUSIC briefly to catch any residual
-    // system sounds before the recognizer confirms it's ready.
+    // Mute system + music streams to suppress SpeechRecognizer bing/boop.
+    // STREAM_SYSTEM carries the recognition sounds on most Android/OEM devices.
+    audioManager.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_MUTE, 0)
     audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
     _statusText.value = "Listening"
     _isListening.value = true
@@ -139,6 +141,7 @@ class VoiceWakeManager(
       override fun onReadyForSpeech(params: Bundle?) {
         // Recognizer is ready — safe to unmute now (startup sound has passed)
         mainHandler.postDelayed({
+          audioManager.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_UNMUTE, 0)
           audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
         }, 100)
         _statusText.value = "Listening"
@@ -158,6 +161,7 @@ class VoiceWakeManager(
         if (stopRequested) return
         _isListening.value = false
         if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+          audioManager.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_UNMUTE, 0)
           audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
           _statusText.value = "Microphone permission required"
           return
