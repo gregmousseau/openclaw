@@ -106,16 +106,9 @@ fun RootScreen(viewModel: MainViewModel) {
   val lastWakeCommand by viewModel.lastWakeCommand.collectAsState()
   val voiceWakeStatusText by viewModel.voiceWakeStatusText.collectAsState()
 
-  // On wake word: switch to TalkMode (voice) instead of opening the text chat sheet
+  // On wake word: open text chat so the response is visible (no TalkMode flip)
   LaunchedEffect(lastWakeCommand) {
-    if (lastWakeCommand != null) {
-      val hasMic = ContextCompat.checkSelfPermission(
-        context, android.Manifest.permission.RECORD_AUDIO
-      ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-      if (hasMic) viewModel.setTalkEnabled(true)
-      // Fall back to text chat if mic permission somehow missing
-      else showChatSheet = true
-    }
+    if (lastWakeCommand != null) showChatSheet = true
   }
   val talkEnabled by viewModel.talkEnabled.collectAsState()
   val talkStatusText by viewModel.talkStatusText.collectAsState()

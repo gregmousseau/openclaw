@@ -63,13 +63,12 @@ class NodeRuntime(context: Context) {
       onCommand = { command ->
         _lastWakeCommand.value = command
         val sessionKey = resolveMainSessionKey()
-        // Enable TalkMode so the orb appears while we process the response
-        setTalkEnabled(true)
         chat.load(sessionKey)
-        // Route through TalkMode's chat.send pipeline so the response is spoken via TTS.
-        // When done, disable TalkMode to re-arm VoiceWake.
+        // Pause VoiceWake while TTS speaks — avoids speaker feedback triggering VAD
+        voiceWake.setSuppressedByTalk(true)
+        // Speak via TalkMode's TTS pipeline (no TalkMode UI — just audio response)
         talkMode.speakWakeCommand(command) {
-          setTalkEnabled(false)
+          voiceWake.setSuppressedByTalk(false)
         }
       },
     )

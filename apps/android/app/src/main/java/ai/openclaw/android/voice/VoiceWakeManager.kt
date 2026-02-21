@@ -60,10 +60,10 @@ class VoiceWakeManager(
   private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
     .coerceAtLeast(3200) // ~100ms at 16kHz
 
-  // RMS 500 is easily crossed by normal speech; background noise rarely exceeds ~150–200
-  private val speechRmsThreshold = 500f
-  // 1 frame (~100ms) — trigger fast so SR starts while user is still speaking
-  private val speechFramesToTrigger = 1
+  // 700 RMS — voice crosses this easily; keyboard clicks (~50ms) typically don't sustain
+  private val speechRmsThreshold = 700f
+  // 3 consecutive frames (~300ms sustained) before triggering — filters brief key taps/clicks
+  private val speechFramesToTrigger = 3
   // Silence frames before resetting the speech counter
   private val silenceFramesToReset = 5
 
