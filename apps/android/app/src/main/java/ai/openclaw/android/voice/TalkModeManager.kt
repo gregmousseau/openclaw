@@ -692,8 +692,39 @@ class TalkModeManager(
     Log.d(tag, "pcm play done")
   }
 
+  /**
+   * Strip markdown and symbols that system TTS reads verbatim.
+   * ElevenLabs normalizes internally; this is only needed for the Android TTS fallback.
+   */
+  private fun stripForSpeech(text: String): String {
+    return text
+      // Remove emoji (Unicode emoji ranges)
+      .replace(Regex("[\\p{So}\\p{Cn}\\uD83C-\\uDBFF\\uDC00-\\uDFFF]+"), " ")
+      // Bold/italic markers
+      .replace(Regex("\\*{1,3}(.*?)\\*{1,3}"), "$1")
+      // Inline code
+      .replace(Regex("`+([^`]*)`+"), "$1")
+      // Headings (#, ##, ###)
+      .replace(Regex("^#{1,6}\\s*", RegexOption.MULTILINE), "")
+      // Arrows and special punctuation → natural pauses/words
+      .replace("→", " to ")
+      .replace("←", " from ")
+      .replace(" — ", ", ")
+      .replace(" -- ", ", ")
+      // Bullet points
+      .replace(Regex("^[\\-\\*]\\s+", RegexOption.MULTILINE), "")
+      // Numbered lists: "1. " → remove number
+      .replace(Regex("^\\d+\\.\\s+", RegexOption.MULTILINE), "")
+      // Links: [text](url) → text
+      .replace(Regex("\\[([^]]+)]\\([^)]*\\)"), "$1")
+      // Collapse multiple spaces/newlines
+      .replace(Regex("[ \\t]{2,}"), " ")
+      .replace(Regex("\\n{3,}"), "\n\n")
+      .trim()
+  }
+
   private suspend fun speakWithSystemTts(text: String) {
-    val trimmed = text.trim()
+    val trimmed = stripForSpeech(text)
     if (trimmed.isEmpty()) return
     val ok = ensureSystemTts()
     if (!ok) {
@@ -795,8 +826,12 @@ class TalkModeManager(
       return
     }
     if (resetInterrupt) {
-      val currentMs = player?.currentPosition?.toDouble() ?: 0.0
-      lastInterruptedAtSeconds = currentMs / 1000.0
+      // Only record interrupt position for ElevenLabs (player-based) playback.
+      // System TTS has no position tracking — don't report a false 0.0s interrupt.
+      val currentMs = player?.currentPosition?.toDouble()
+      if (currentMs != null && currentMs > 0.0) {
+        lastInterruptedAtSeconds = currentMs / 1000.0
+      }
     }
     cleanupPlayer()
     cleanupPcmTrack()

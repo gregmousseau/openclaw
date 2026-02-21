@@ -130,12 +130,15 @@ class VoiceWakeManager(
         _statusText.value = "Paused"
       }
     } else {
-      // TalkMode released the mic — re-arm if wake mode is still on
-      mainHandler.post {
-        if (!stopRequested) {
-          _isListening.value = true
-          _statusText.value = "Listening"
-          startVad()
+      // TalkMode released the mic — wait for TTS echo to fade, then re-arm
+      scope.launch {
+        delay(3_000L)
+        mainHandler.post {
+          if (!stopRequested && !suppressedByTalk) {
+            _isListening.value = true
+            _statusText.value = "Listening"
+            startVad()
+          }
         }
       }
     }
