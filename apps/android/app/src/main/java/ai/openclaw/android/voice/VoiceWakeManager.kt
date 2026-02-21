@@ -52,7 +52,9 @@ class VoiceWakeManager(
     sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
   ).coerceAtLeast(3200)
 
-  private val speechRmsThreshold = 400f
+  // Low threshold: fires on pre-speech ambient noise/breathing so SpeechRecognizer
+  // is armed before the wake word finishes, not after it.
+  private val speechRmsThreshold = 100f
   private val speechFramesToTrigger = 1
 
   private var vadJob: Job? = null
@@ -159,6 +161,11 @@ class VoiceWakeManager(
           putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
           putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
           putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+          // Keep session open long enough to capture the full wake word + command.
+          // Min speech length prevents instant cutoff on short words.
+          putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
+          putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
+          putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 800L)
         }
         recognizer?.startListening(intent)
       } catch (e: Exception) {
