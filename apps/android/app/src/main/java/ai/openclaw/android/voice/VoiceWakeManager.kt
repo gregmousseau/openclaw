@@ -113,6 +113,34 @@ class VoiceWakeManager(
     }
   }
 
+  private var suppressedByTalk = false
+
+  /** Pause wake word monitoring while TalkMode holds the mic; resume when released. */
+  fun setSuppressedByTalk(suppressed: Boolean) {
+    if (suppressedByTalk == suppressed) return
+    suppressedByTalk = suppressed
+    if (suppressed) {
+      // Pause VAD + recognizer without fully stopping (keeps isEnabled intent)
+      vadJob?.cancel()
+      vadJob = null
+      mainHandler.post {
+        recognizer?.cancel()
+        recognizerActive = false
+        _isListening.value = false
+        _statusText.value = "Paused"
+      }
+    } else {
+      // TalkMode released the mic — re-arm if wake mode is still on
+      mainHandler.post {
+        if (!stopRequested) {
+          _isListening.value = true
+          _statusText.value = "Listening"
+          startVad()
+        }
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // VAD loop — silent AudioRecord, no OEM sounds during idle
   // ---------------------------------------------------------------------------

@@ -67,13 +67,15 @@ class NodeRuntime(context: Context) {
           event = "agent.request",
           payloadJson =
             buildJsonObject {
-              put("message", JsonPrimitive(command))
+              // <voice> prefix signals that this came from wake word — respond via TTS
+              put("message", JsonPrimitive("<voice>$command</voice>"))
               put("sessionKey", JsonPrimitive(sessionKey))
               put("thinking", JsonPrimitive(chatThinkingLevel.value))
               put("deliver", JsonPrimitive(true))
             }.toString(),
         )
-        // Subscribe the chat view so the response appears when the sheet opens
+        // Switch to TalkMode so the response is spoken, not shown as text chat
+        setTalkEnabled(true)
         chat.load(sessionKey)
       },
     )
@@ -416,6 +418,8 @@ class NodeRuntime(context: Context) {
       talkEnabled.collect { enabled ->
         talkMode.setEnabled(enabled)
         externalAudioCaptureActive.value = enabled
+        // Pause VoiceWake while TalkMode holds the mic; resume when TalkMode exits
+        voiceWake.setSuppressedByTalk(enabled)
       }
     }
 
