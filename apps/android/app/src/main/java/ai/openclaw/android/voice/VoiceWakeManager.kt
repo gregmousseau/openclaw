@@ -55,20 +55,19 @@ class VoiceWakeManager(
   private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
     .coerceAtLeast(3200) // ~100ms at 16kHz
 
-  // RMS threshold — adjust if too sensitive / not sensitive enough
-  private val speechRmsThreshold = 800f
-  // How many consecutive speech frames before triggering recognizer
-  private val speechFramesToTrigger = 3
-  // Silence frames before resetting speech detection
-  private val silenceFramesToReset = 8
+  // RMS threshold — 500 is easily crossed by normal speech at typical mic distances
+  private val speechRmsThreshold = 500f
+  // Frames of sustained speech before triggering recognizer (1 = ~200ms, very responsive)
+  private val speechFramesToTrigger = 1
+  // Silence frames before resetting speech counter
+  private val silenceFramesToReset = 5
 
   private var vadJob: Job? = null
   private var audioRecord: AudioRecord? = null
 
   // --- SpeechRecognizer ---
   private var recognizer: SpeechRecognizer? = null
-  private var recognizerActive = false
-  private var recognizerRestartJob: Job? = null
+  @Volatile private var recognizerActive = false
   private var lastDispatched: String? = null
   private var stopRequested = false
 
@@ -88,8 +87,6 @@ class VoiceWakeManager(
     stopRequested = true
     vadJob?.cancel()
     vadJob = null
-    recognizerRestartJob?.cancel()
-    recognizerRestartJob = null
     audioRecord?.stop()
     audioRecord?.release()
     audioRecord = null
@@ -182,16 +179,13 @@ class VoiceWakeManager(
     }
   }
 
-  private fun releaseRecognizer(restartDelayMs: Long = 200) {
+  private fun releaseRecognizer() {
+    recognizerActive = false  // set immediately so VAD can re-arm
     mainHandler.post {
       recognizer?.cancel()
       recognizer?.destroy()
       recognizer = null
-      recognizerActive = false
     }
-    // Brief delay so VAD can re-arm before next speech burst
-    recognizerRestartJob?.cancel()
-    recognizerRestartJob = scope.launch { delay(restartDelayMs) }
   }
 
   private fun createRecognizer(): SpeechRecognizer =
