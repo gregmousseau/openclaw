@@ -211,8 +211,9 @@ class VoiceWakeManager(
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        // No minimum length — let the recognizer process as soon as it has audio.
-        // Setting MINIMUM_LENGTH on a late-starting session causes immediate timeout.
+        // Wait 2s of silence before finalizing — captures full phrases, not just first word
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
       }
       try {
         r.startListening(intent)   // OEM bing fires here — expected, user is speaking
@@ -279,8 +280,10 @@ class VoiceWakeManager(
       restartVad(delayMs = delay)
     }
     override fun onPartialResults(partialResults: Bundle?) {
-      partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-        ?.firstOrNull()?.let(::handleTranscription)
+      // Partials update the status display only — don't dispatch until final result
+      val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        ?.firstOrNull()
+      if (partial != null) _statusText.value = "Heard: $partial"
     }
     override fun onEvent(eventType: Int, params: Bundle?) {}
   }
