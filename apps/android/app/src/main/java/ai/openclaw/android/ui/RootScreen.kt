@@ -392,23 +392,36 @@ fun RootScreen(viewModel: MainViewModel) {
   }
 }
 
-private fun handleQRResult(url: String, viewModel: MainViewModel, context: android.content.Context) {
+private fun handleQRResult(raw: String, viewModel: MainViewModel, context: android.content.Context) {
   try {
-    val uri = Uri.parse(url)
     val host: String
     val port: Int
     val token: String
 
-    if (uri.scheme == "openclaw") {
-      // openclaw://connect?host=...&port=...&token=...
-      host = uri.getQueryParameter("host") ?: return
-      port = uri.getQueryParameter("port")?.toIntOrNull() ?: return
-      token = uri.getQueryParameter("token") ?: ""
+    // Try base64 setup-code format first: openclaw qr outputs base64({"url":"wss://...","token":"..."})
+    val setupPayload = runCatching {
+      val json = String(android.util.Base64.decode(raw.trim(), android.util.Base64.DEFAULT))
+      org.json.JSONObject(json)
+    }.getOrNull()
+
+    if (setupPayload != null && setupPayload.has("url")) {
+      val wsUri = Uri.parse(setupPayload.getString("url"))
+      host = wsUri.host ?: return
+      port = if (wsUri.port > 0) wsUri.port else 443
+      token = setupPayload.optString("token", "")
     } else {
-      // http(s)://host:port or plain host:port
-      host = uri.host ?: return
-      port = if (uri.port > 0) uri.port else 18789
-      token = uri.getQueryParameter("token") ?: ""
+      val uri = Uri.parse(raw)
+      if (uri.scheme == "openclaw") {
+        // openclaw://connect?host=...&port=...&token=...
+        host = uri.getQueryParameter("host") ?: return
+        port = uri.getQueryParameter("port")?.toIntOrNull() ?: return
+        token = uri.getQueryParameter("token") ?: ""
+      } else {
+        // http(s)://host:port?token=... or plain host:port
+        host = uri.host ?: return
+        port = if (uri.port > 0) uri.port else if (uri.scheme == "https") 443 else 18789
+        token = uri.getQueryParameter("token") ?: ""
+      }
     }
 
     viewModel.setManualHost(host)
@@ -418,7 +431,7 @@ private fun handleQRResult(url: String, viewModel: MainViewModel, context: andro
     NodeForegroundService.start(context)
     viewModel.connectManual()
   } catch (_: Exception) {
-    // Malformed URL — silently ignore
+    // Malformed QR — silently ignore
   }
 }
 
