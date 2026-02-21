@@ -2,6 +2,7 @@ package ai.openclaw.android.voice
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -21,6 +22,7 @@ class VoiceWakeManager(
   private val onCommand: suspend (String) -> Unit,
 ) {
   private val mainHandler = Handler(Looper.getMainLooper())
+  private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
   private val _isListening = MutableStateFlow(false)
   val isListening: StateFlow<Boolean> = _isListening
@@ -72,6 +74,8 @@ class VoiceWakeManager(
       recognizer?.cancel()
       recognizer?.destroy()
       recognizer = null
+      // Always restore audio in case we stopped mid-mute
+      audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
     }
   }
 
@@ -83,11 +87,23 @@ class VoiceWakeManager(
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        // Prefer on-device recognition: avoids network round-trip and suppresses
+        // Google's system bing/boop UI sounds that fire on every session start/end.
+        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
       }
 
+    // Belt-and-suspenders: mute STREAM_MUSIC briefly to catch any residual
+    // system sounds before the recognizer confirms it's ready.
+    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
     _statusText.value = "Listening"
     _isListening.value = true
     r.startListening(intent)
+  }
+
+  /** Silence the recognizer's end-of-session boop before scheduling a restart. */
+  private fun silentRestart(delayMs: Long = 350) {
+    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
+    scheduleRestart(delayMs)
   }
 
   private fun scheduleRestart(delayMs: Long = 350) {
@@ -121,6 +137,10 @@ class VoiceWakeManager(
   private val listener =
     object : RecognitionListener {
       override fun onReadyForSpeech(params: Bundle?) {
+        // Recognizer is ready — safe to unmute now (startup sound has passed)
+        mainHandler.postDelayed({
+          audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
+        }, 100)
         _statusText.value = "Listening"
       }
 
@@ -131,13 +151,14 @@ class VoiceWakeManager(
       override fun onBufferReceived(buffer: ByteArray?) {}
 
       override fun onEndOfSpeech() {
-        scheduleRestart()
+        silentRestart()
       }
 
       override fun onError(error: Int) {
         if (stopRequested) return
         _isListening.value = false
         if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+          audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
           _statusText.value = "Microphone permission required"
           return
         }
@@ -154,13 +175,13 @@ class VoiceWakeManager(
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Listening"
             else -> "Speech error ($error)"
           }
-        scheduleRestart(delayMs = 600)
+        silentRestart(delayMs = 600)
       }
 
       override fun onResults(results: Bundle?) {
         val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
         list.firstOrNull()?.let(::handleTranscription)
-        scheduleRestart()
+        silentRestart()
       }
 
       override fun onPartialResults(partialResults: Bundle?) {
