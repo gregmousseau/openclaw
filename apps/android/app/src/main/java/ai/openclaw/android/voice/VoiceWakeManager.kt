@@ -25,12 +25,11 @@ import kotlin.math.sqrt
  * Always-on wake word manager.
  *
  * Architecture:
- *   AudioRecord (silent, continuous) → RMS VAD → SpeechRecognizer (only on speech)
+ *   AudioRecord (silent VAD) → stop AudioRecord → SpeechRecognizer → restart AudioRecord
  *
- * AudioRecord uses VOICE_RECOGNITION source and never triggers the OEM
- * mic-activation sound. SpeechRecognizer is only started when the VAD detects
- * real speech energy, so the bing (if any) fires at most once per actual
- * utterance — not every 4-5 seconds of silence.
+ * AudioRecord holds the mic silently (no OEM privacy sounds).
+ * When speech is detected, AudioRecord is STOPPED before SpeechRecognizer starts
+ * so both never compete for the mic simultaneously.
  */
 class VoiceWakeManager(
   private val context: Context,
@@ -48,26 +47,17 @@ class VoiceWakeManager(
   var triggerWords: List<String> = emptyList()
     private set
 
-  // --- AudioRecord VAD ---
   private val sampleRate = 16000
-  private val channelConfig = AudioFormat.CHANNEL_IN_MONO
-  private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-  private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-    .coerceAtLeast(3200) // ~100ms at 16kHz
+  private val bufferSize = AudioRecord.getMinBufferSize(
+    sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+  ).coerceAtLeast(3200)
 
-  // RMS threshold — 500 is easily crossed by normal speech at typical mic distances
-  private val speechRmsThreshold = 500f
-  // Frames of sustained speech before triggering recognizer (1 = ~200ms, very responsive)
+  private val speechRmsThreshold = 400f
   private val speechFramesToTrigger = 1
-  // Silence frames before resetting speech counter
-  private val silenceFramesToReset = 5
 
   private var vadJob: Job? = null
-  private var audioRecord: AudioRecord? = null
-
-  // --- SpeechRecognizer ---
-  private var recognizer: SpeechRecognizer? = null
   @Volatile private var recognizerActive = false
+  private var recognizer: SpeechRecognizer? = null
   private var lastDispatched: String? = null
   private var stopRequested = false
 
@@ -87,9 +77,6 @@ class VoiceWakeManager(
     stopRequested = true
     vadJob?.cancel()
     vadJob = null
-    audioRecord?.stop()
-    audioRecord?.release()
-    audioRecord = null
     mainHandler.post {
       recognizer?.cancel()
       recognizer?.destroy()
@@ -101,7 +88,7 @@ class VoiceWakeManager(
   }
 
   // ---------------------------------------------------------------------------
-  // VAD loop — runs entirely on a background coroutine, no system sounds
+  // VAD — AudioRecord loop, silent, no system mic sounds
   // ---------------------------------------------------------------------------
 
   private fun startVad() {
@@ -110,36 +97,37 @@ class VoiceWakeManager(
       val ar = try {
         AudioRecord(
           MediaRecorder.AudioSource.VOICE_RECOGNITION,
-          sampleRate, channelConfig, audioFormat, bufferSize * 4,
+          sampleRate,
+          AudioFormat.CHANNEL_IN_MONO,
+          AudioFormat.ENCODING_PCM_16BIT,
+          bufferSize * 4,
         ).also { it.startRecording() }
       } catch (e: Exception) {
         _statusText.value = "Mic unavailable: ${e.message}"
         _isListening.value = false
         return@launch
       }
-      audioRecord = ar
 
       val buf = ShortArray(bufferSize)
       var speechFrames = 0
-      var silenceFrames = 0
 
       while (isActive && !stopRequested) {
         val read = ar.read(buf, 0, bufferSize)
-        if (read <= 0) { delay(50); continue }
+        if (read <= 0) { delay(30); continue }
 
         val rms = computeRms(buf, read)
 
         if (rms > speechRmsThreshold) {
-          silenceFrames = 0
           speechFrames++
           if (speechFrames >= speechFramesToTrigger && !recognizerActive) {
+            // Stop AudioRecord BEFORE starting SpeechRecognizer to avoid mic conflict
+            ar.stop()
+            ar.release()
             triggerRecognizer()
+            return@launch  // VAD loop ends; restartVad() called after recognizer finishes
           }
         } else {
-          silenceFrames++
-          if (silenceFrames >= silenceFramesToReset) {
-            speechFrames = 0
-          }
+          speechFrames = 0
         }
       }
 
@@ -155,14 +143,14 @@ class VoiceWakeManager(
   }
 
   // ---------------------------------------------------------------------------
-  // SpeechRecognizer — only activated on detected speech
+  // SpeechRecognizer — only runs when speech detected, mic is free
   // ---------------------------------------------------------------------------
 
   private fun triggerRecognizer() {
     if (stopRequested) return
     recognizerActive = true
     mainHandler.post {
-      if (stopRequested) { recognizerActive = false; return@post }
+      if (stopRequested) { recognizerActive = false; restartVad(); return@post }
       try {
         recognizer?.destroy()
         recognizer = createRecognizer().also { it.setRecognitionListener(recognitionListener) }
@@ -175,16 +163,26 @@ class VoiceWakeManager(
         recognizer?.startListening(intent)
       } catch (e: Exception) {
         recognizerActive = false
+        restartVad()
       }
     }
   }
 
   private fun releaseRecognizer() {
-    recognizerActive = false  // set immediately so VAD can re-arm
+    recognizerActive = false
     mainHandler.post {
       recognizer?.cancel()
       recognizer?.destroy()
       recognizer = null
+    }
+    restartVad()
+  }
+
+  private fun restartVad() {
+    if (stopRequested) return
+    scope.launch {
+      delay(300) // brief gap so mic is fully released before reopening
+      if (!stopRequested) startVad()
     }
   }
 
@@ -206,34 +204,27 @@ class VoiceWakeManager(
   }
 
   private val recognitionListener = object : RecognitionListener {
-    override fun onReadyForSpeech(params: Bundle?) {
-      _statusText.value = "Listening"
-    }
+    override fun onReadyForSpeech(params: Bundle?) { _statusText.value = "Listening" }
     override fun onBeginningOfSpeech() {}
     override fun onRmsChanged(rmsdB: Float) {}
     override fun onBufferReceived(buffer: ByteArray?) {}
-    override fun onEndOfSpeech() {
-      releaseRecognizer()
-    }
+    override fun onEndOfSpeech() { releaseRecognizer() }
     override fun onError(error: Int) {
       if (stopRequested) return
       if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
-        _statusText.value = "Microphone permission required"
-        stop("Microphone permission required")
-        return
+        stop("Microphone permission required"); return
       }
-      // Reset status but keep VAD running — it will re-trigger on next speech
       _statusText.value = "Listening"
       releaseRecognizer()
     }
     override fun onResults(results: Bundle?) {
-      val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
-      list.firstOrNull()?.let(::handleTranscription)
+      results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        ?.firstOrNull()?.let(::handleTranscription)
       releaseRecognizer()
     }
     override fun onPartialResults(partialResults: Bundle?) {
-      val list = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
-      list.firstOrNull()?.let(::handleTranscription)
+      partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        ?.firstOrNull()?.let(::handleTranscription)
     }
     override fun onEvent(eventType: Int, params: Bundle?) {}
   }
