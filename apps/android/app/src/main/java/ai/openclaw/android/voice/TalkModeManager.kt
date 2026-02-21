@@ -133,6 +133,34 @@ class TalkModeManager(
     }
   }
 
+  /**
+   * Speak a wake-word command through TalkMode's full pipeline:
+   * chat.send → wait for final → read assistant text → TTS.
+   * Calls [onComplete] when done so the caller can disable TalkMode and re-arm VoiceWake.
+   */
+  fun speakWakeCommand(command: String, onComplete: () -> Unit) {
+    scope.launch {
+      try {
+        reloadConfig()
+        subscribeChatIfNeeded(session = session, sessionKey = mainSessionKey.ifBlank { "main" })
+        val startedAt = System.currentTimeMillis().toDouble() / 1000.0
+        val prompt = buildPrompt(command)
+        val runId = sendChat(prompt, session)
+        val ok = waitForChatFinal(runId)
+        val assistant = waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
+        if (!assistant.isNullOrBlank()) {
+          _statusText.value = "Speaking…"
+          playAssistant(assistant)
+        } else {
+          _statusText.value = "No reply"
+        }
+      } catch (err: Throwable) {
+        Log.w(tag, "speakWakeCommand failed: ${err.message}")
+      }
+      onComplete()
+    }
+  }
+
   fun handleGatewayEvent(event: String, payloadJson: String?) {
     if (event != "chat") return
     if (payloadJson.isNullOrBlank()) return

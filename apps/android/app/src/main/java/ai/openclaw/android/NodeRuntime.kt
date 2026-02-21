@@ -63,20 +63,14 @@ class NodeRuntime(context: Context) {
       onCommand = { command ->
         _lastWakeCommand.value = command
         val sessionKey = resolveMainSessionKey()
-        nodeSession.sendNodeEvent(
-          event = "agent.request",
-          payloadJson =
-            buildJsonObject {
-              // <voice> prefix signals that this came from wake word — respond via TTS
-              put("message", JsonPrimitive("<voice>$command</voice>"))
-              put("sessionKey", JsonPrimitive(sessionKey))
-              put("thinking", JsonPrimitive(chatThinkingLevel.value))
-              put("deliver", JsonPrimitive(true))
-            }.toString(),
-        )
-        // Switch to TalkMode so the response is spoken, not shown as text chat
+        // Enable TalkMode so the orb appears while we process the response
         setTalkEnabled(true)
         chat.load(sessionKey)
+        // Route through TalkMode's chat.send pipeline so the response is spoken via TTS.
+        // When done, disable TalkMode to re-arm VoiceWake.
+        talkMode.speakWakeCommand(command) {
+          setTalkEnabled(false)
+        }
       },
     )
   }

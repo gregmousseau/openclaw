@@ -146,6 +146,7 @@ class VoiceWakeManager(
   // ---------------------------------------------------------------------------
 
   private fun startVad() {
+    if (suppressedByTalk) return
     vadJob?.cancel()
     vadJob = scope.launch {
       val ar = try {
@@ -230,7 +231,7 @@ class VoiceWakeManager(
     lastDispatched = null  // reset so same phrase can re-trigger
     scope.launch {
       delay(delayMs)
-      if (!stopRequested) startVad()
+      if (!stopRequested && !suppressedByTalk) startVad()
     }
   }
 
