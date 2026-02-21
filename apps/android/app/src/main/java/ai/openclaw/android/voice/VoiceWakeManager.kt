@@ -213,11 +213,13 @@ class VoiceWakeManager(
     }
 
   private fun handleTranscription(text: String) {
+    // Show raw transcript in status so we can see what SR actually hears
+    _statusText.value = "Heard: $text"
     val command = VoiceWakeCommandExtractor.extractCommand(text, triggerWords) ?: return
     if (command == lastDispatched) return
     lastDispatched = command
     scope.launch { onCommand(command) }
-    _statusText.value = "Triggered"
+    _statusText.value = "Triggered: $command"
   }
 
   private val recognitionListener = object : RecognitionListener {
