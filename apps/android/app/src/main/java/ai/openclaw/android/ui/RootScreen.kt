@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -104,6 +105,11 @@ fun RootScreen(viewModel: MainViewModel) {
   val isForeground by viewModel.isForeground.collectAsState()
   val lastWakeCommand by viewModel.lastWakeCommand.collectAsState()
   val voiceWakeStatusText by viewModel.voiceWakeStatusText.collectAsState()
+
+  // Open the chat sheet automatically when a wake word fires so the response is visible
+  LaunchedEffect(lastWakeCommand) {
+    if (lastWakeCommand != null) showChatSheet = true
+  }
   val talkEnabled by viewModel.talkEnabled.collectAsState()
   val talkStatusText by viewModel.talkStatusText.collectAsState()
   val talkIsListening by viewModel.talkIsListening.collectAsState()

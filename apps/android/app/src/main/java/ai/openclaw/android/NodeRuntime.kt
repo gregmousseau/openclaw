@@ -62,16 +62,19 @@ class NodeRuntime(context: Context) {
       scope = scope,
       onCommand = { command ->
         _lastWakeCommand.value = command
+        val sessionKey = resolveMainSessionKey()
         nodeSession.sendNodeEvent(
           event = "agent.request",
           payloadJson =
             buildJsonObject {
               put("message", JsonPrimitive(command))
-              put("sessionKey", JsonPrimitive(resolveMainSessionKey()))
+              put("sessionKey", JsonPrimitive(sessionKey))
               put("thinking", JsonPrimitive(chatThinkingLevel.value))
               put("deliver", JsonPrimitive(true))
             }.toString(),
         )
+        // Subscribe the chat view so the response appears when the sheet opens
+        chat.load(sessionKey)
       },
     )
   }
