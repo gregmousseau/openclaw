@@ -16,11 +16,14 @@ class InvokeDispatcher(
   private val smsHandler: SmsHandler,
   private val a2uiHandler: A2UIHandler,
   private val deviceStatusHandler: DeviceStatusHandler,
+  private val photoLibraryHandler: PhotoLibraryHandler,
+  private val motionHandler: MotionHandler,
   private val debugHandler: DebugHandler,
   private val appUpdateHandler: AppUpdateHandler,
   private val isForeground: () -> Boolean,
   private val cameraEnabled: () -> Boolean,
   private val locationEnabled: () -> Boolean,
+  private val photosEnabled: () -> Boolean,
 ) {
   suspend fun handleInvoke(command: String, paramsJson: String?): GatewaySession.InvokeResult {
     // Check foreground requirement for canvas/camera/screen commands
@@ -51,6 +54,14 @@ class InvokeDispatcher(
       return GatewaySession.InvokeResult.error(
         code = "LOCATION_DISABLED",
         message = "LOCATION_DISABLED: enable Location in Settings",
+      )
+    }
+
+    // Check photos enabled
+    if (command == "photos.latest" && !photosEnabled()) {
+      return GatewaySession.InvokeResult.error(
+        code = "PHOTOS_DISABLED",
+        message = "PHOTOS_DISABLED: enable Photos in Settings",
       )
     }
 
@@ -159,6 +170,13 @@ class InvokeDispatcher(
 
       // SMS command
       OpenClawSmsCommand.Send.rawValue -> smsHandler.handleSmsSend(paramsJson)
+
+      // Photos command
+      "photos.latest" -> photoLibraryHandler.handleLatest(paramsJson)
+
+      // Motion commands
+      "motion.activity" -> motionHandler.handleActivity(paramsJson)
+      "motion.pedometer" -> motionHandler.handlePedometer(paramsJson)
 
       // Device commands
       "device.status" -> deviceStatusHandler.handleStatus()

@@ -44,6 +44,9 @@ class SecurePrefs(context: Context) {
   private val _cameraEnabled = MutableStateFlow(prefs.getBoolean("camera.enabled", true))
   val cameraEnabled: StateFlow<Boolean> = _cameraEnabled
 
+  private val _photosEnabled = MutableStateFlow(prefs.getBoolean("photos.enabled", true))
+  val photosEnabled: StateFlow<Boolean> = _photosEnabled
+
   private val _locationMode =
     MutableStateFlow(LocationMode.fromRawValue(prefs.getString("location.enabledMode", "off")))
   val locationMode: StateFlow<LocationMode> = _locationMode
@@ -113,6 +116,11 @@ class SecurePrefs(context: Context) {
   fun setCameraEnabled(value: Boolean) {
     prefs.edit { putBoolean("camera.enabled", value) }
     _cameraEnabled.value = value
+  }
+
+  fun setPhotosEnabled(value: Boolean) {
+    prefs.edit { putBoolean("photos.enabled", value) }
+    _photosEnabled.value = value
   }
 
   fun setLocationMode(mode: LocationMode) {

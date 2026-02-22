@@ -157,6 +157,16 @@ class NodeRuntime(context: Context) {
     appContext = appContext,
   )
 
+  private val photoLibraryHandler: PhotoLibraryHandler = PhotoLibraryHandler(
+    appContext = appContext,
+    json = json,
+  )
+
+  private val motionHandler: MotionHandler = MotionHandler(
+    appContext = appContext,
+    json = json,
+  )
+
   private val invokeDispatcher: InvokeDispatcher = InvokeDispatcher(
     canvas = canvas,
     cameraHandler = cameraHandler,
@@ -165,11 +175,14 @@ class NodeRuntime(context: Context) {
     smsHandler = smsHandlerImpl,
     a2uiHandler = a2uiHandler,
     deviceStatusHandler = deviceStatusHandler,
+    photoLibraryHandler = photoLibraryHandler,
+    motionHandler = motionHandler,
     debugHandler = debugHandler,
     appUpdateHandler = appUpdateHandler,
     isForeground = { _isForeground.value },
     cameraEnabled = { cameraEnabled.value },
     locationEnabled = { locationMode.value != LocationMode.Off },
+    photosEnabled = { photosEnabled.value },
   )
 
   private lateinit var gatewayEventHandler: GatewayEventHandler
@@ -341,6 +354,7 @@ class NodeRuntime(context: Context) {
   val instanceId: StateFlow<String> = prefs.instanceId
   val displayName: StateFlow<String> = prefs.displayName
   val cameraEnabled: StateFlow<Boolean> = prefs.cameraEnabled
+  val photosEnabled: StateFlow<Boolean> = prefs.photosEnabled
   val locationMode: StateFlow<LocationMode> = prefs.locationMode
   val locationPreciseEnabled: StateFlow<Boolean> = prefs.locationPreciseEnabled
   val preventSleep: StateFlow<Boolean> = prefs.preventSleep
