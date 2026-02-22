@@ -167,6 +167,16 @@ class NodeRuntime(context: Context) {
     json = json,
   )
 
+  private val contactsHandler: ContactsHandler = ContactsHandler(
+    appContext = appContext,
+    json = json,
+  )
+
+  private val calendarHandler: CalendarHandler = CalendarHandler(
+    appContext = appContext,
+    json = json,
+  )
+
   private val invokeDispatcher: InvokeDispatcher = InvokeDispatcher(
     canvas = canvas,
     cameraHandler = cameraHandler,
@@ -177,6 +187,8 @@ class NodeRuntime(context: Context) {
     deviceStatusHandler = deviceStatusHandler,
     photoLibraryHandler = photoLibraryHandler,
     motionHandler = motionHandler,
+    contactsHandler = contactsHandler,
+    calendarHandler = calendarHandler,
     debugHandler = debugHandler,
     appUpdateHandler = appUpdateHandler,
     isForeground = { _isForeground.value },

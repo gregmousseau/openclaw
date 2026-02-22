@@ -19,6 +19,8 @@ class InvokeDispatcher(
   private val photoLibraryHandler: PhotoLibraryHandler,
   private val motionHandler: MotionHandler,
   private val debugHandler: DebugHandler,
+  private val contactsHandler: ContactsHandler,
+  private val calendarHandler: CalendarHandler,
   private val appUpdateHandler: AppUpdateHandler,
   private val isForeground: () -> Boolean,
   private val cameraEnabled: () -> Boolean,
@@ -181,6 +183,14 @@ class InvokeDispatcher(
       // Device commands
       "device.status" -> deviceStatusHandler.handleStatus()
       "device.info" -> deviceStatusHandler.handleInfo()
+
+      // Contacts commands
+      "contacts.search" -> contactsHandler.handleSearch(paramsJson)
+      "contacts.add" -> contactsHandler.handleAdd(paramsJson)
+
+      // Calendar commands
+      "calendar.events" -> calendarHandler.handleEvents(paramsJson)
+      "calendar.add" -> calendarHandler.handleAdd(paramsJson)
 
       // Debug commands
       "debug.ed25519" -> debugHandler.handleEd25519()
