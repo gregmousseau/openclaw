@@ -153,6 +153,10 @@ class NodeRuntime(context: Context) {
     manualTls = { manualTls.value },
   )
 
+  private val deviceStatusHandler: DeviceStatusHandler = DeviceStatusHandler(
+    appContext = appContext,
+  )
+
   private val invokeDispatcher: InvokeDispatcher = InvokeDispatcher(
     canvas = canvas,
     cameraHandler = cameraHandler,
@@ -160,6 +164,7 @@ class NodeRuntime(context: Context) {
     screenHandler = screenHandler,
     smsHandler = smsHandlerImpl,
     a2uiHandler = a2uiHandler,
+    deviceStatusHandler = deviceStatusHandler,
     debugHandler = debugHandler,
     appUpdateHandler = appUpdateHandler,
     isForeground = { _isForeground.value },

@@ -15,6 +15,7 @@ class InvokeDispatcher(
   private val screenHandler: ScreenHandler,
   private val smsHandler: SmsHandler,
   private val a2uiHandler: A2UIHandler,
+  private val deviceStatusHandler: DeviceStatusHandler,
   private val debugHandler: DebugHandler,
   private val appUpdateHandler: AppUpdateHandler,
   private val isForeground: () -> Boolean,
@@ -158,6 +159,10 @@ class InvokeDispatcher(
 
       // SMS command
       OpenClawSmsCommand.Send.rawValue -> smsHandler.handleSmsSend(paramsJson)
+
+      // Device commands
+      "device.status" -> deviceStatusHandler.handleStatus()
+      "device.info" -> deviceStatusHandler.handleInfo()
 
       // Debug commands
       "debug.ed25519" -> debugHandler.handleEd25519()
