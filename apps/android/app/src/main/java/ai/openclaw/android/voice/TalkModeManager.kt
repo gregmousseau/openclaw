@@ -384,6 +384,7 @@ class TalkModeManager(
 
   private fun handleTranscript(text: String, isFinal: Boolean) {
     val trimmed = text.trim()
+    Log.d(tag, "handleTranscript isFinal=$isFinal speaking=${_isSpeaking.value} listening=${_isListening.value} text=${trimmed.take(40)}")
     if (_isSpeaking.value && interruptOnSpeech) {
       if (shouldInterrupt(trimmed)) {
         stopSpeaking()
@@ -1546,12 +1547,15 @@ class TalkModeManager(
   private val listener =
     object : RecognitionListener {
       override fun onReadyForSpeech(params: Bundle?) {
+        Log.d(tag, "onReadyForSpeech")
         if (_isEnabled.value) {
           _statusText.value = if (_isListening.value) "Listening" else _statusText.value
         }
       }
 
-      override fun onBeginningOfSpeech() {}
+      override fun onBeginningOfSpeech() {
+        Log.d(tag, "onBeginningOfSpeech")
+      }
 
       override fun onRmsChanged(rmsdB: Float) {}
 
