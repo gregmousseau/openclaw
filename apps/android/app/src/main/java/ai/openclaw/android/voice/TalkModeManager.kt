@@ -1210,7 +1210,7 @@ class TalkModeManager(
         conn.outputStream.use { it.write(payload.toByteArray()) }
 
         val code = conn.responseCode
-        Log.d(tag, "elevenlabs http code=$code voiceId=$voiceId format=${request.outputFormat}")
+        Log.d(tag, "elevenlabs http code=$code voiceId=$voiceId format=${request.outputFormat} keyLen=${apiKey.length} keyPrefix=${apiKey.take(8)}")
         if (code >= 400) {
           val message = conn.errorStream?.readBytes()?.toString(Charsets.UTF_8) ?: ""
           sink.fail()
@@ -1476,8 +1476,9 @@ class TalkModeManager(
     val trimmed = preferred?.trim().orEmpty()
     if (trimmed.isNotEmpty()) {
       val resolved = resolveVoiceAlias(trimmed)
-      if (resolved != null) return resolved
-      Log.w(tag, "unknown voice alias $trimmed")
+      // If it resolves as an alias, use the alias target.
+      // Otherwise treat it as a direct voice ID (e.g. "21m00Tcm4TlvDq8ikWAM").
+      return resolved ?: trimmed
     }
     fallbackVoiceId?.let { return it }
 
