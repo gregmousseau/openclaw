@@ -163,15 +163,18 @@ class VoiceWakeManager(
         }
     }
 
-    private fun handleText(text: String, isFinal: Boolean) {
-        if (text.isBlank()) return
+    /**
+     * Returns true if a wake command was dispatched (caller should NOT scheduleRestart).
+     */
+    private fun handleText(text: String, isFinal: Boolean): Boolean {
+        if (text.isBlank()) return false
         _statusText.value = "Heard: ${text.take(40)}"
         val command = VoiceWakeCommandExtractor.extractCommand(text, triggerWords)
         if (command == null) {
             // If we had a pending wake from an earlier partial but the latest
             // longer partial lost it (shouldn't happen, but be safe), clear it.
             if (isFinal) pendingWakeCommand = null
-            return
+            return false
         }
         if (!isFinal) {
             // Wake word detected in partial — save the command but wait for the
@@ -179,12 +182,13 @@ class VoiceWakeManager(
             Log.d(tag, "wake detected in partial, waiting for final: '$command'")
             pendingWakeCommand = command
             _statusText.value = "Wake detected..."
-            return
+            return false
         }
         // Final result with wake word — dispatch the full command.
         Log.d(tag, "wake word matched (final) command='$command'")
         pendingWakeCommand = null
         dispatch(command)
+        return true  // dispatch() owns the cooldown + restart; caller must not scheduleRestart
     }
 
     private fun dispatch(command: String) {
@@ -249,7 +253,8 @@ class VoiceWakeManager(
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull() ?: ""
             if (text.isNotBlank()) {
-                handleText(text, isFinal = true)
+                // If handleText dispatched, it owns the cooldown + restart — bail now.
+                if (handleText(text, isFinal = true)) return
             }
             // If handleText didn't dispatch (final had no wake match) but we had
             // a pending wake from a partial — dispatch that fallback now.
