@@ -729,7 +729,7 @@ class TalkModeManager(
     player.setAudioAttributes(
       AudioAttributes.Builder()
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+        .setUsage(AudioAttributes.USAGE_MEDIA)
         .build(),
     )
     player.setOnPreparedListener {
@@ -794,7 +794,7 @@ class TalkModeManager(
       AudioTrack(
         AudioAttributes.Builder()
           .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-          .setUsage(AudioAttributes.USAGE_ASSISTANT)
+          .setUsage(AudioAttributes.USAGE_MEDIA)
           .build(),
         AudioFormat.Builder()
           .setSampleRate(sampleRate)
@@ -947,7 +947,7 @@ class TalkModeManager(
       val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
         .setAudioAttributes(
           AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+            .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         )
@@ -1092,6 +1092,7 @@ class TalkModeManager(
         conn.outputStream.use { it.write(payload.toByteArray()) }
 
         val code = conn.responseCode
+        Log.d(tag, "elevenlabs http code=$code voiceId=$voiceId format=${request.outputFormat}")
         if (code >= 400) {
           val message = conn.errorStream?.readBytes()?.toString(Charsets.UTF_8) ?: ""
           sink.fail()
