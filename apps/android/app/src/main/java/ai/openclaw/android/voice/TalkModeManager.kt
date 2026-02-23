@@ -832,7 +832,10 @@ class TalkModeManager(
       throw IllegalStateException("AudioTrack init failed")
     }
     pcmTrack = track
-    track.play()
+    // Don't call track.play() yet — start the track only when the first audio
+    // chunk arrives from ElevenLabs (see streamPcm). OxygenOS/OnePlus kills an
+    // AudioTrack that underruns (no data written) for ~1+ seconds, causing
+    // write() to return 0. Deferring play() until first data avoids the underrun.
 
     Log.d(tag, "pcm play start sampleRate=$sampleRate bufferSize=$bufferSize")
     try {
@@ -1154,12 +1157,21 @@ class TalkModeManager(
           throw IllegalStateException("ElevenLabs failed: $code $message")
         }
 
+        var totalBytesWritten = 0L
+        var trackStarted = false
         val buffer = ByteArray(8 * 1024)
         conn.inputStream.use { input ->
           while (true) {
             if (pcmStopRequested) return@withContext
             val read = input.read(buffer)
             if (read <= 0) break
+            // Start the AudioTrack only when the first chunk is ready — avoids
+            // the ~1.4s underrun window while ElevenLabs prepares audio.
+            // OxygenOS kills a track that underruns for >1s (write() returns 0).
+            if (!trackStarted) {
+              track.play()
+              trackStarted = true
+            }
             var offset = 0
             while (offset < read) {
               if (pcmStopRequested) return@withContext
