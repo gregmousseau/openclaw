@@ -318,7 +318,7 @@ class NodeRuntime(context: Context) {
       context = appContext,
       scope = scope,
       session = operatorSession,
-      supportsChatSubscribe = false,
+      supportsChatSubscribe = true,
       isConnected = { operatorConnected },
     )
   }
