@@ -21,8 +21,8 @@ android {
     applicationId = "ai.moes.openclaw.greg"
     minSdk = 31
     targetSdk = 36
-    versionCode = 202602231
-    versionName = "2026.2.22.28"
+    versionCode = 202602232
+    versionName = "2026.2.22.29"
     ndk {
       // Support all major ABIs — native libs are tiny (~47 KB per ABI)
       abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
