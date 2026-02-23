@@ -42,11 +42,13 @@ fun ChatMarkdown(text: String, textColor: Color) {
         is ChatMarkdownBlock.Text -> {
           val trimmed = b.text.trimEnd()
           if (trimmed.isEmpty()) continue
-          Text(
-            text = parseInlineMarkdown(trimmed, inlineCodeBg = inlineCodeBg),
-            style = MaterialTheme.typography.bodyMedium,
-            color = textColor,
-          )
+          SelectionContainer {
+            Text(
+              text = parseInlineMarkdown(trimmed, inlineCodeBg = inlineCodeBg),
+              style = MaterialTheme.typography.bodyMedium,
+              color = textColor,
+            )
+          }
         }
         is ChatMarkdownBlock.Thinking -> {
           val preview = b.text.lineSequence().firstOrNull()?.take(80)
