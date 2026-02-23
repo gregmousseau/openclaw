@@ -100,6 +100,16 @@ class ConnectionManager(
       if (smsAvailable()) {
         add(OpenClawSmsCommand.Send.rawValue)
       }
+      // Device info + sensor invoke commands (permission gating handled in InvokeDispatcher)
+      add("device.status")
+      add("device.info")
+      add("motion.activity")
+      add("motion.pedometer")
+      add("contacts.search")
+      add("contacts.add")
+      add("calendar.events")
+      add("calendar.add")
+      add("photos.latest")
       if (BuildConfig.DEBUG) {
         add("debug.logs")
         add("debug.ed25519")
