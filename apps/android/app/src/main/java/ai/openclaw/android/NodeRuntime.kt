@@ -382,6 +382,8 @@ class NodeRuntime(context: Context) {
   val lastDiscoveredStableId: StateFlow<String> = prefs.lastDiscoveredStableId
   val gatewayAutoconnect: StateFlow<Boolean> = prefs.gatewayAutoconnect
   val canvasDebugStatusEnabled: StateFlow<Boolean> = prefs.canvasDebugStatusEnabled
+  val talkElevenLabsApiKey: StateFlow<String> = prefs.talkElevenLabsApiKey
+  val talkVoiceId: StateFlow<String> = prefs.talkVoiceId
 
   private var didAutoConnect = false
 
@@ -445,6 +447,16 @@ class NodeRuntime(context: Context) {
         // Pause VoiceWake while TalkMode holds the mic; resume when TalkMode exits
         voiceWake.setSuppressedByTalk(enabled)
       }
+    }
+
+    scope.launch {
+      combine(prefs.talkElevenLabsApiKey, prefs.talkVoiceId) { k, v -> Pair(k, v) }
+        .collect { (apiKey, voiceId) ->
+          talkMode.setElevenLabsConfig(
+            apiKey = apiKey.takeIf { it.isNotEmpty() },
+            voiceId = voiceId.takeIf { it.isNotEmpty() },
+          )
+        }
     }
 
     scope.launch(Dispatchers.Default) {
@@ -570,6 +582,14 @@ class NodeRuntime(context: Context) {
 
   fun setTalkEnabled(value: Boolean) {
     prefs.setTalkEnabled(value)
+  }
+
+  fun saveTalkElevenLabsApiKey(key: String) {
+    prefs.saveTalkElevenLabsApiKey(key)
+  }
+
+  fun saveTalkVoiceId(id: String) {
+    prefs.saveTalkVoiceId(id)
   }
 
   fun refreshGatewayConnection() {

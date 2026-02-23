@@ -126,6 +126,11 @@ class TalkModeManager(
   private var systemTtsPending: CompletableDeferred<Unit>? = null
   private var systemTtsPendingId: String? = null
 
+  fun setElevenLabsConfig(apiKey: String?, voiceId: String?) {
+    this.apiKey = apiKey?.trim()?.takeIf { it.isNotEmpty() }
+    this.defaultVoiceId = voiceId?.trim()?.takeIf { it.isNotEmpty() }
+  }
+
   fun setMainSessionKey(sessionKey: String?) {
     val trimmed = sessionKey?.trim().orEmpty()
     if (trimmed.isEmpty()) return
