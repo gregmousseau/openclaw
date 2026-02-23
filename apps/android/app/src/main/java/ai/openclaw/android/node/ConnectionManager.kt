@@ -25,6 +25,7 @@ class ConnectionManager(
   private val smsAvailable: () -> Boolean,
   private val hasRecordAudioPermission: () -> Boolean,
   private val manualTls: () -> Boolean,
+  private val photosEnabled: () -> Boolean = { true },
 ) {
   companion object {
     internal fun resolveTlsParamsForEndpoint(
@@ -109,7 +110,9 @@ class ConnectionManager(
       add("contacts.add")
       add("calendar.events")
       add("calendar.add")
-      add("photos.latest")
+      if (photosEnabled()) {
+        add("photos.latest")
+      }
       if (BuildConfig.DEBUG) {
         add("debug.logs")
         add("debug.ed25519")
