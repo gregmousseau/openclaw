@@ -149,7 +149,7 @@ class TalkModeManager(
   private var modelOverrideActive = false
   private var mainSessionKey: String = "main"
 
-  private var pendingRunId: String? = null
+  @Volatile private var pendingRunId: String? = null
   private var pendingFinal: CompletableDeferred<Boolean>? = null
   private val completedRunsLock = Any()
   private val completedRunStates = LinkedHashMap<String, Boolean>()
@@ -180,6 +180,7 @@ class TalkModeManager(
 
   fun setElevenLabsConfig(apiKey: String?, voiceId: String?) {
     this.apiKey = apiKey?.trim()?.takeIf { it.isNotEmpty() }
+    Log.d(tag, "setElevenLabsConfig voiceId=$voiceId")
     this.defaultVoiceId = voiceId?.trim()?.takeIf { it.isNotEmpty() }
   }
 
@@ -858,7 +859,7 @@ class TalkModeManager(
       finished.await()
       Log.d(tag, "file play done")
     } finally {
-      cleanupPlayer()
+      try { cleanupPlayer() } catch (_: Throwable) {}
       tempFile.delete()
     }
   }
@@ -1145,12 +1146,8 @@ class TalkModeManager(
       defaultModelId = model ?: defaultModelIdFallback
       if (!modelOverrideActive) currentModelId = defaultModelId
       defaultOutputFormat = outputFormat ?: defaultOutputFormatFallback
-      apiKey =
-        if (activeProvider == defaultTalkProvider) {
-          key ?: envKey?.takeIf { it.isNotEmpty() }
-        } else {
-          null
-        }
+      apiKey = key ?: envKey?.takeIf { it.isNotEmpty() }
+      Log.d(tag, "reloadConfig apiKey=${if (apiKey != null) "set" else "null"} voiceId=$defaultVoiceId")
       if (interrupt != null) interruptOnSpeech = interrupt
       if (activeProvider != defaultTalkProvider) {
         Log.w(tag, "talk provider $activeProvider unsupported; using system voice fallback")
@@ -1188,6 +1185,7 @@ class TalkModeManager(
         Log.d(tag, "elevenlabs http code=$code voiceId=$voiceId format=${request.outputFormat} keyLen=${apiKey.length} keyPrefix=${apiKey.take(8)}")
         if (code >= 400) {
           val message = conn.errorStream?.readBytes()?.toString(Charsets.UTF_8) ?: ""
+          Log.w(tag, "elevenlabs error code=$code voiceId=$voiceId body=$message")
           sink.fail()
           throw IllegalStateException("ElevenLabs failed: $code $message")
         }
@@ -1260,6 +1258,20 @@ class TalkModeManager(
         }
       } finally {
         conn.disconnect()
+      }
+    }
+  }
+
+  private suspend fun waitForPcmDrain(track: AudioTrack, totalFrames: Long, sampleRate: Int) {
+    if (totalFrames <= 0) return
+    withContext(Dispatchers.IO) {
+      val drainDeadline = SystemClock.elapsedRealtime() + 15_000
+      while (!pcmStopRequested && SystemClock.elapsedRealtime() < drainDeadline) {
+        val played = track.playbackHeadPosition.toLong().and(0xFFFFFFFFL)
+        if (played >= totalFrames) break
+        val remainingFrames = totalFrames - played
+        val sleepMs = ((remainingFrames * 1000L) / sampleRate.toLong()).coerceIn(12L, 120L)
+        delay(sleepMs)
       }
     }
   }
