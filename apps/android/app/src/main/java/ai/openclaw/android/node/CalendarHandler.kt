@@ -247,9 +247,7 @@ class CalendarHandler(
       java.time.Instant.parse(iso).toEpochMilli()
     } catch (_: Throwable) {
       try {
-        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-        sdf.timeZone = TimeZone.getTimeZone("UTC")
-        sdf.parse(iso)?.time
+        java.time.OffsetDateTime.parse(iso).toInstant().toEpochMilli()
       } catch (_: Throwable) {
         null
       }

@@ -81,15 +81,20 @@ class PhotoLibraryHandler(
           val dateAdded = cursor.getLong(dateCol)
           val imageUri = android.content.ContentUris.withAppendedId(uri, imageId)
 
-          val encoded = try {
-            encodePhoto(imageUri, maxWidth, quality)
+          val originalBitmap = try {
+            appContext.contentResolver.openInputStream(imageUri)?.use { BitmapFactory.decodeStream(it) }
           } catch (_: Throwable) {
-            continue
+            null
           } ?: continue
 
-          // Budget check: lower quality then downscale if single photo too large
-          val finalEncoded = fitToBudget(imageUri, encoded, maxWidth)
-            ?: continue
+          val finalEncoded = try {
+            val scaled = scaleBitmap(originalBitmap, maxWidth)
+            val result = fitToBudget(scaled, quality)
+            if (scaled !== originalBitmap) scaled.recycle()
+            result
+          } finally {
+            originalBitmap.recycle()
+          } ?: continue
 
           if (totalBase64Bytes + finalEncoded.base64.length > MAX_TOTAL_BASE64_BYTES) break
 
@@ -113,52 +118,37 @@ class PhotoLibraryHandler(
 
   private data class EncodedPhoto(val base64: String, val width: Int, val height: Int)
 
-  private fun encodePhoto(
-    imageUri: android.net.Uri,
-    maxWidth: Int,
-    quality: Double,
-  ): EncodedPhoto? {
-    val inputStream = appContext.contentResolver.openInputStream(imageUri) ?: return null
-    val bitmap = inputStream.use { BitmapFactory.decodeStream(it) } ?: return null
-    val scaled = scaleBitmap(bitmap, maxWidth)
-    val base64 = compressToBase64(scaled, (quality * 100).toInt())
-    val result = EncodedPhoto(base64 = base64, width = scaled.width, height = scaled.height)
-    if (scaled !== bitmap) scaled.recycle()
-    bitmap.recycle()
-    return result
-  }
-
   private fun fitToBudget(
-    imageUri: android.net.Uri,
-    initial: EncodedPhoto,
-    maxWidth: Int,
+    bitmap: Bitmap,
+    initialQuality: Double,
   ): EncodedPhoto? {
-    if (initial.base64.length <= MAX_PER_PHOTO_BASE64_BYTES) return initial
-
-    // Try lower quality first
-    for (q in intArrayOf(60, 40, 25)) {
-      val inputStream = appContext.contentResolver.openInputStream(imageUri) ?: return null
-      val bitmap = inputStream.use { BitmapFactory.decodeStream(it) } ?: return null
-      val scaled = scaleBitmap(bitmap, maxWidth)
-      val base64 = compressToBase64(scaled, q)
-      val result = EncodedPhoto(base64 = base64, width = scaled.width, height = scaled.height)
-      if (scaled !== bitmap) scaled.recycle()
-      bitmap.recycle()
-      if (result.base64.length <= MAX_PER_PHOTO_BASE64_BYTES) return result
+    // Try compressing at current quality, then lower quality gradually
+    var quality = initialQuality
+    while (quality >= 0.25) {
+      val base64 = compressToBase64(bitmap, (quality * 100).toInt())
+      if (base64.length <= MAX_PER_PHOTO_BASE64_BYTES) {
+        return EncodedPhoto(base64 = base64, width = bitmap.width, height = bitmap.height)
+      }
+      quality -= 0.15
     }
 
-    // Try downscaling further
-    for (w in intArrayOf(maxWidth / 2, maxWidth / 4, 400)) {
-      val inputStream = appContext.contentResolver.openInputStream(imageUri) ?: return null
-      val bitmap = inputStream.use { BitmapFactory.decodeStream(it) } ?: return null
-      val scaled = scaleBitmap(bitmap, w)
-      val base64 = compressToBase64(scaled, 25)
-      val result = EncodedPhoto(base64 = base64, width = scaled.width, height = scaled.height)
-      if (scaled !== bitmap) scaled.recycle()
-      bitmap.recycle()
-      if (result.base64.length <= MAX_PER_PHOTO_BASE64_BYTES) return result
+    // Still too large — downscale by 75% each step at minimum quality
+    var current = bitmap
+    for (i in 1..4) {
+      val newWidth = (current.width * 0.75).toInt().coerceAtLeast(100)
+      if (newWidth >= current.width) break
+      val scaled = scaleBitmap(current, newWidth)
+      if (current !== bitmap) current.recycle()
+      current = scaled
+      val base64 = compressToBase64(current, 25)
+      if (base64.length <= MAX_PER_PHOTO_BASE64_BYTES) {
+        val result = EncodedPhoto(base64 = base64, width = current.width, height = current.height)
+        if (current !== bitmap) current.recycle()
+        return result
+      }
     }
 
+    if (current !== bitmap) current.recycle()
     return null
   }
 

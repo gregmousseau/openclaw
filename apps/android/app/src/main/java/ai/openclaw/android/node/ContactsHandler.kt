@@ -198,73 +198,69 @@ class ContactsHandler(
     put("identifier", contactId)
     put("displayName", displayName)
 
-    // Structured name details
+    var givenName = ""
+    var familyName = ""
+    var organizationName = ""
+    val phoneNumbers = mutableListOf<String>()
+    val emails = mutableListOf<String>()
+
+    // Single query for all relevant MIME types
+    val mimeTypes = arrayOf(
+      ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
+      ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE,
+      ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE,
+      ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
+    )
+    val selection = "${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} IN (?, ?, ?, ?)"
+    val selectionArgs = arrayOf(contactId, *mimeTypes)
+
     appContext.contentResolver.query(
       ContactsContract.Data.CONTENT_URI,
       arrayOf(
+        ContactsContract.Data.MIMETYPE,
         ContactsContract.CommonDataKinds.StructuredName.GIVEN_NAME,
         ContactsContract.CommonDataKinds.StructuredName.FAMILY_NAME,
+        ContactsContract.CommonDataKinds.Organization.COMPANY,
+        ContactsContract.CommonDataKinds.Phone.NUMBER,
+        ContactsContract.CommonDataKinds.Email.ADDRESS,
       ),
-      "${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
-      arrayOf(contactId, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE),
+      selection,
+      selectionArgs,
       null,
     )?.use { cursor ->
-      if (cursor.moveToFirst()) {
-        put("givenName", cursor.getString(0) ?: "")
-        put("familyName", cursor.getString(1) ?: "")
-      } else {
-        put("givenName", "")
-        put("familyName", "")
-      }
-    } ?: run {
-      put("givenName", "")
-      put("familyName", "")
-    }
+      val mimeCol = cursor.getColumnIndexOrThrow(ContactsContract.Data.MIMETYPE)
+      val givenCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.StructuredName.GIVEN_NAME)
+      val familyCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.StructuredName.FAMILY_NAME)
+      val companyCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Organization.COMPANY)
+      val phoneCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
+      val emailCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.ADDRESS)
 
-    // Organization
-    appContext.contentResolver.query(
-      ContactsContract.Data.CONTENT_URI,
-      arrayOf(ContactsContract.CommonDataKinds.Organization.COMPANY),
-      "${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
-      arrayOf(contactId, ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE),
-      null,
-    )?.use { cursor ->
-      put("organizationName", if (cursor.moveToFirst()) cursor.getString(0) ?: "" else "")
-    } ?: put("organizationName", "")
-
-    // Phone numbers
-    putJsonArray("phoneNumbers") {
-      appContext.contentResolver.query(
-        ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-        arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
-        "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} = ?",
-        arrayOf(contactId),
-        null,
-      )?.use { cursor ->
-        val numCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
-        while (cursor.moveToNext()) {
-          val number = cursor.getString(numCol)
-          if (!number.isNullOrBlank()) add(JsonPrimitive(number))
+      while (cursor.moveToNext()) {
+        when (cursor.getString(mimeCol)) {
+          ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE -> {
+            givenName = cursor.getString(givenCol) ?: ""
+            familyName = cursor.getString(familyCol) ?: ""
+          }
+          ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE -> {
+            organizationName = cursor.getString(companyCol) ?: ""
+          }
+          ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE -> {
+            val number = cursor.getString(phoneCol)
+            if (!number.isNullOrBlank()) phoneNumbers.add(number)
+          }
+          ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE -> {
+            val email = cursor.getString(emailCol)
+            if (!email.isNullOrBlank()) emails.add(email)
+          }
         }
       }
     }
 
-    // Emails
-    putJsonArray("emails") {
-      appContext.contentResolver.query(
-        ContactsContract.CommonDataKinds.Email.CONTENT_URI,
-        arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
-        "${ContactsContract.CommonDataKinds.Email.CONTACT_ID} = ?",
-        arrayOf(contactId),
-        null,
-      )?.use { cursor ->
-        val emailCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.ADDRESS)
-        while (cursor.moveToNext()) {
-          val email = cursor.getString(emailCol)
-          if (!email.isNullOrBlank()) add(JsonPrimitive(email))
-        }
-      }
-    }
+    put("givenName", givenName)
+    put("familyName", familyName)
+    put("organizationName", organizationName)
+    putJsonArray("phoneNumbers") { phoneNumbers.forEach { add(JsonPrimitive(it)) } }
+    putJsonArray("emails") { emails.forEach { add(JsonPrimitive(it)) } }
   }
 
   private fun findExistingContact(phoneNumbers: List<String>, emails: List<String>): String? {

@@ -99,7 +99,7 @@ class DeviceStatusHandler(
   fun handleInfo(): GatewaySession.InvokeResult {
     val json = buildJsonObject {
       put("deviceName", Build.MODEL)
-      put("modelIdentifier", Build.DEVICE)
+      put("modelIdentifier", Build.MODEL)
       put("systemName", "Android")
       put("systemVersion", Build.VERSION.RELEASE)
       try {
