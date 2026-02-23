@@ -448,6 +448,13 @@ class TalkModeManager(
     _statusText.value = "Thinking…"
     lastTranscript = ""
     lastHeardAtMs = null
+    // Release SpeechRecognizer before making the API call and playing TTS.
+    // Leaving it live causes MediaPlayer to fail — both compete for the audio session.
+    mainHandler.post {
+      recognizer?.cancel()
+      recognizer?.destroy()
+      recognizer = null
+    }
 
     reloadConfig()
     val prompt = buildPrompt(transcript)
