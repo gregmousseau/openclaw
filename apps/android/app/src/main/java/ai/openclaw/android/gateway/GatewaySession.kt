@@ -313,7 +313,10 @@ class GatewaySession(
       }
       val payloadJson = res.payloadJson ?: throw IllegalStateException("connect failed: missing payload")
       val obj = json.parseToJsonElement(payloadJson).asObjectOrNull() ?: throw IllegalStateException("connect failed")
-      val serverName = obj["server"].asObjectOrNull()?.get("host").asStringOrNull()
+      val serverObj = obj["server"].asObjectOrNull()
+      val serverName = serverObj?.get("host").asStringOrNull()
+        ?: serverObj?.get("version").asStringOrNull()
+        ?: "Gateway"
       val authObj = obj["auth"].asObjectOrNull()
       val deviceToken = authObj?.get("deviceToken").asStringOrNull()
       val authRole = authObj?.get("role").asStringOrNull() ?: options.role
