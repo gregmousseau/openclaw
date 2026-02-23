@@ -144,6 +144,7 @@ class TalkModeManager(
 
   fun setElevenLabsConfig(apiKey: String?, voiceId: String?) {
     this.apiKey = apiKey?.trim()?.takeIf { it.isNotEmpty() }
+    Log.d(tag, "setElevenLabsConfig apiKey=${if (this.apiKey != null) "set(${this.apiKey!!.length})" else "null"} voiceId=$voiceId")
     this.defaultVoiceId = voiceId?.trim()?.takeIf { it.isNotEmpty() }
   }
 
@@ -1181,12 +1182,14 @@ class TalkModeManager(
       if (!modelOverrideActive) currentModelId = defaultModelId
       defaultOutputFormat = outputFormat ?: defaultOutputFormatFallback
       apiKey = key ?: envKey?.takeIf { it.isNotEmpty() }
+      Log.d(tag, "reloadConfig apiKey=${if (apiKey != null) "set(${apiKey!!.length})" else "null"} voiceId=$defaultVoiceId")
       if (interrupt != null) interruptOnSpeech = interrupt
     } catch (_: Throwable) {
       defaultVoiceId = envVoice?.takeIf { it.isNotEmpty() } ?: sagVoice?.takeIf { it.isNotEmpty() }
       defaultModelId = defaultModelIdFallback
       if (!modelOverrideActive) currentModelId = defaultModelId
       apiKey = envKey?.takeIf { it.isNotEmpty() }
+      Log.w(tag, "reloadConfig failed, apiKey=${if (apiKey != null) "env(${apiKey!!.length})" else "null"}")
       voiceAliases = emptyMap()
       defaultOutputFormat = defaultOutputFormatFallback
     }
@@ -1210,12 +1213,13 @@ class TalkModeManager(
         conn.outputStream.use { it.write(payload.toByteArray()) }
 
         val code = conn.responseCode
-        Log.d(tag, "elevenlabs http code=$code voiceId=$voiceId format=${request.outputFormat} keyLen=${apiKey.length} keyPrefix=${apiKey.take(8)}")
         if (code >= 400) {
           val message = conn.errorStream?.readBytes()?.toString(Charsets.UTF_8) ?: ""
+          Log.w(tag, "elevenlabs error code=$code voiceId=$voiceId keyLen=${apiKey.length} keyPrefix=${apiKey.take(12)} body=$message")
           sink.fail()
           throw IllegalStateException("ElevenLabs failed: $code $message")
         }
+        Log.d(tag, "elevenlabs http code=$code voiceId=$voiceId format=${request.outputFormat}")
 
         val buffer = ByteArray(8 * 1024)
         conn.inputStream.use { input ->
