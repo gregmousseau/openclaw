@@ -4,11 +4,13 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaPlayer
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -26,6 +28,7 @@ import ai.openclaw.android.normalizeMainKey
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +57,11 @@ class TalkModeManager(
     private const val tag = "TalkMode"
     private const val defaultModelIdFallback = "eleven_v3"
     private const val defaultOutputFormatFallback = "pcm_24000"
+    private const val silenceWindowMs = 900L
+    private const val listenWatchdogMs = 12_000L
+    private const val chatFinalWaitWithSubscribeMs = 45_000L
+    private const val chatFinalWaitWithoutSubscribeMs = 6_000L
+    private const val maxCachedRunCompletions = 128
   }
 
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -83,7 +91,8 @@ class TalkModeManager(
   private var listeningMode = false
 
   private var silenceJob: Job? = null
-  private val silenceWindowMs = 700L
+  private var listenWatchdogJob: Job? = null
+  @Volatile private var finalizeInFlight = false
   private var lastTranscript: String = ""
   private var lastHeardAtMs: Long? = null
   private var lastSpokenText: String? = null
@@ -104,12 +113,15 @@ class TalkModeManager(
 
   private var pendingRunId: String? = null
   private var pendingFinal: CompletableDeferred<Boolean>? = null
+  private val completedRunsLock = Any()
+  private val completedRunStates = LinkedHashMap<String, Boolean>()
   private var chatSubscribedSessionKey: String? = null
 
   private var player: MediaPlayer? = null
   private var streamingSource: StreamingMediaDataSource? = null
   private var pcmTrack: AudioTrack? = null
   @Volatile private var pcmStopRequested = false
+  @Volatile private var stopSpeakingRequested = false
   private var systemTts: TextToSpeech? = null
   private var systemTtsPending: CompletableDeferred<Unit>? = null
   private var systemTtsPendingId: String? = null
@@ -146,7 +158,7 @@ class TalkModeManager(
         val startedAt = System.currentTimeMillis().toDouble() / 1000.0
         val prompt = buildPrompt(command)
         val runId = sendChat(prompt, session)
-        val ok = waitForChatFinal(runId)
+        val ok = waitForChatFinal(runId, timeoutMs = waitForFinalTimeoutMs())
         val assistant = waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
         if (!assistant.isNullOrBlank()) {
           _statusText.value = "Speaking…"
@@ -164,7 +176,6 @@ class TalkModeManager(
   fun handleGatewayEvent(event: String, payloadJson: String?) {
     if (event != "chat") return
     if (payloadJson.isNullOrBlank()) return
-    val pending = pendingRunId ?: return
     val obj =
       try {
         json.parseToJsonElement(payloadJson).asObjectOrNull()
@@ -172,13 +183,19 @@ class TalkModeManager(
         null
       } ?: return
     val runId = obj["runId"].asStringOrNull() ?: return
-    if (runId != pending) return
     val state = obj["state"].asStringOrNull() ?: return
-    if (state == "final") {
-      pendingFinal?.complete(true)
-      pendingFinal = null
-      pendingRunId = null
-    }
+    val terminal =
+      when (state) {
+        "final" -> true
+        "aborted", "error" -> false
+        else -> null
+      } ?: return
+    cacheRunCompletion(runId, terminal)
+
+    if (runId != pendingRunId) return
+    pendingFinal?.complete(terminal)
+    pendingFinal = null
+    pendingRunId = null
   }
 
   private fun start() {
@@ -186,6 +203,7 @@ class TalkModeManager(
       if (_isListening.value) return@post
       stopRequested = false
       listeningMode = true
+      clearListenWatchdog()
       Log.d(tag, "start")
 
       if (!SpeechRecognizer.isRecognitionAvailable(context)) {
@@ -223,6 +241,9 @@ class TalkModeManager(
     restartJob = null
     silenceJob?.cancel()
     silenceJob = null
+    listenWatchdogJob?.cancel()
+    listenWatchdogJob = null
+    finalizeInFlight = false
     lastTranscript = ""
     lastHeardAtMs = null
     _isListening.value = false
@@ -230,6 +251,12 @@ class TalkModeManager(
     stopSpeaking()
     _usingFallbackTts.value = false
     chatSubscribedSessionKey = null
+    pendingRunId = null
+    pendingFinal?.cancel()
+    pendingFinal = null
+    synchronized(completedRunsLock) {
+      completedRunStates.clear()
+    }
 
     mainHandler.post {
       recognizer?.cancel()
@@ -250,13 +277,49 @@ class TalkModeManager(
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1100L)
       }
 
     if (markListening) {
       _statusText.value = "Listening"
       _isListening.value = true
     }
-    r.startListening(intent)
+    try {
+      r.startListening(intent)
+      armListenWatchdog()
+    } catch (err: Throwable) {
+      _isListening.value = false
+      Log.w(tag, "startListening failed: ${err.message ?: err::class.simpleName}")
+      scheduleRestart(delayMs = 700)
+      throw err
+    }
+  }
+
+  private fun armListenWatchdog() {
+    listenWatchdogJob?.cancel()
+    listenWatchdogJob =
+      scope.launch {
+        delay(listenWatchdogMs)
+        mainHandler.post {
+          if (stopRequested || !_isEnabled.value) return@post
+          if (!_isListening.value) return@post
+          if (lastTranscript.trim().isNotEmpty()) return@post
+          Log.w(tag, "recognizer watchdog timeout; restarting listen cycle")
+          try {
+            recognizer?.cancel()
+          } catch (_: Throwable) {
+            // best-effort
+          }
+          scheduleRestart(delayMs = 0)
+        }
+      }
+  }
+
+  private fun clearListenWatchdog() {
+    listenWatchdogJob?.cancel()
+    listenWatchdogJob = null
   }
 
   private fun scheduleRestart(delayMs: Long = 350) {
@@ -268,9 +331,10 @@ class TalkModeManager(
         mainHandler.post {
           if (stopRequested) return@post
           try {
+            clearListenWatchdog()
             recognizer?.cancel()
             val shouldListen = listeningMode
-            val shouldInterrupt = _isSpeaking.value && interruptOnSpeech
+            val shouldInterrupt = _isSpeaking.value && interruptOnSpeech && shouldAllowSpeechInterrupt()
             if (!shouldListen && !shouldInterrupt) return@post
             startListeningInternal(markListening = shouldListen)
           } catch (_: Throwable) {
@@ -298,6 +362,9 @@ class TalkModeManager(
 
     if (isFinal) {
       lastTranscript = trimmed
+      if (trimmed.isNotEmpty()) {
+        requestTranscriptFinalize(trimmed)
+      }
     }
   }
 
@@ -319,10 +386,26 @@ class TalkModeManager(
     val lastHeard = lastHeardAtMs ?: return
     val elapsed = SystemClock.elapsedRealtime() - lastHeard
     if (elapsed < silenceWindowMs) return
-    scope.launch { finalizeTranscript(transcript) }
+    requestTranscriptFinalize(transcript)
+  }
+
+  private fun requestTranscriptFinalize(transcript: String) {
+    if (!_isListening.value) return
+    val normalized = transcript.trim()
+    if (normalized.isEmpty()) return
+    if (finalizeInFlight) return
+    finalizeInFlight = true
+    scope.launch {
+      try {
+        finalizeTranscript(normalized)
+      } finally {
+        finalizeInFlight = false
+      }
+    }
   }
 
   private suspend fun finalizeTranscript(transcript: String) {
+    clearListenWatchdog()
     listeningMode = false
     _isListening.value = false
     _statusText.value = "Thinking…"
@@ -344,9 +427,9 @@ class TalkModeManager(
       Log.d(tag, "chat.send start sessionKey=${mainSessionKey.ifBlank { "main" }} chars=${prompt.length}")
       val runId = sendChat(prompt, session)
       Log.d(tag, "chat.send ok runId=$runId")
-      val ok = waitForChatFinal(runId)
+      val ok = waitForChatFinal(runId, timeoutMs = waitForFinalTimeoutMs())
       if (!ok) {
-        Log.w(tag, "chat final timeout runId=$runId; attempting history fallback")
+        Log.w(tag, "chat final not observed runId=$runId; attempting history fallback")
       }
       val assistant = waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
       if (assistant.isNullOrBlank()) {
@@ -395,8 +478,12 @@ class TalkModeManager(
     return lines.joinToString("\n")
   }
 
+  private fun waitForFinalTimeoutMs(): Long =
+    if (supportsChatSubscribe) chatFinalWaitWithSubscribeMs else chatFinalWaitWithoutSubscribeMs
+
   private suspend fun sendChat(message: String, session: GatewaySession): String {
     val runId = UUID.randomUUID().toString()
+    pendingRunId = runId
     val params =
       buildJsonObject {
         put("sessionKey", JsonPrimitive(mainSessionKey.ifBlank { "main" }))
@@ -405,24 +492,37 @@ class TalkModeManager(
         put("timeoutMs", JsonPrimitive(30_000))
         put("idempotencyKey", JsonPrimitive(runId))
       }
-    val res = session.request("chat.send", params.toString())
-    val parsed = parseRunId(res) ?: runId
-    if (parsed != runId) {
-      pendingRunId = parsed
+    return try {
+      val res = session.request("chat.send", params.toString())
+      val parsed = parseRunId(res) ?: runId
+      if (parsed != runId) {
+        pendingRunId = parsed
+      }
+      parsed
+    } catch (err: Throwable) {
+      if (pendingRunId == runId) {
+        pendingRunId = null
+      }
+      throw err
     }
-    return parsed
   }
 
-  private suspend fun waitForChatFinal(runId: String): Boolean {
+  private suspend fun waitForChatFinal(runId: String, timeoutMs: Long): Boolean {
     pendingFinal?.cancel()
+    consumeRunCompletion(runId)?.let { return it }
     val deferred = CompletableDeferred<Boolean>()
     pendingRunId = runId
     pendingFinal = deferred
+    consumeRunCompletion(runId)?.let { cached ->
+      pendingFinal = null
+      pendingRunId = null
+      return cached
+    }
 
     val result =
       withContext(Dispatchers.IO) {
         try {
-          kotlinx.coroutines.withTimeout(120_000) { deferred.await() }
+          kotlinx.coroutines.withTimeout(timeoutMs) { deferred.await() }
         } catch (_: Throwable) {
           false
         }
@@ -430,9 +530,27 @@ class TalkModeManager(
 
     if (!result) {
       pendingFinal = null
-      pendingRunId = null
+      if (pendingRunId == runId) {
+        pendingRunId = null
+      }
     }
     return result
+  }
+
+  private fun cacheRunCompletion(runId: String, isFinal: Boolean) {
+    synchronized(completedRunsLock) {
+      completedRunStates[runId] = isFinal
+      while (completedRunStates.size > maxCachedRunCompletions) {
+        val first = completedRunStates.entries.firstOrNull() ?: break
+        completedRunStates.remove(first.key)
+      }
+    }
+  }
+
+  private fun consumeRunCompletion(runId: String): Boolean? {
+    synchronized(completedRunsLock) {
+      return completedRunStates.remove(runId)
+    }
   }
 
   private suspend fun waitForAssistantText(
@@ -516,6 +634,8 @@ class TalkModeManager(
 
     _statusText.value = "Speaking…"
     _isSpeaking.value = true
+    pcmStopRequested = false
+    stopSpeakingRequested = false
     lastSpokenText = cleaned
     ensureInterruptListener()
 
@@ -555,6 +675,10 @@ class TalkModeManager(
         Log.d(tag, "elevenlabs stream ok durMs=${SystemClock.elapsedRealtime() - ttsStarted}")
       }
     } catch (err: Throwable) {
+      if (isIntentionalSpeechStop(err)) {
+        Log.d(tag, "speak interrupted")
+        return
+      }
       Log.w(tag, "speak failed: ${err.message ?: err::class.simpleName}; falling back to system voice")
       try {
         _usingFallbackTts.value = true
@@ -564,13 +688,14 @@ class TalkModeManager(
         _statusText.value = "Speak failed: ${fallbackErr.message ?: fallbackErr::class.simpleName}"
         Log.w(tag, "system voice failed: ${fallbackErr.message ?: fallbackErr::class.simpleName}")
       }
+    } finally {
+      stopSpeakingRequested = false
+      _isSpeaking.value = false
     }
-
-    _isSpeaking.value = false
   }
 
   private suspend fun streamAndPlay(voiceId: String, apiKey: String, request: ElevenLabsRequest) {
-    stopSpeaking(resetInterrupt = false)
+    stopSpeaking(resetInterrupt = false, markIntentionalStop = false)
 
     pcmStopRequested = false
     val pcmSampleRate = TalkModeRuntime.parsePcmSampleRate(request.outputFormat)
@@ -684,10 +809,15 @@ class TalkModeManager(
     track.play()
 
     Log.d(tag, "pcm play start sampleRate=$sampleRate bufferSize=$bufferSize")
+    var drained = false
     try {
-      streamPcm(voiceId = voiceId, apiKey = apiKey, request = request, track = track)
+      val totalFrames = streamPcm(voiceId = voiceId, apiKey = apiKey, request = request, track = track)
+      if (!pcmStopRequested) {
+        waitForPcmDrain(track = track, totalFrames = totalFrames, sampleRate = sampleRate)
+        drained = true
+      }
     } finally {
-      cleanupPcmTrack()
+      cleanupPcmTrack(flush = pcmStopRequested || !drained)
     }
     Log.d(tag, "pcm play done")
   }
@@ -814,8 +944,11 @@ class TalkModeManager(
     }
   }
 
-  private fun stopSpeaking(resetInterrupt: Boolean = true) {
+  private fun stopSpeaking(resetInterrupt: Boolean = true, markIntentionalStop: Boolean = true) {
     pcmStopRequested = true
+    if (markIntentionalStop) {
+      stopSpeakingRequested = true
+    }
     if (!_isSpeaking.value) {
       cleanupPlayer()
       cleanupPcmTrack()
@@ -842,6 +975,11 @@ class TalkModeManager(
     _isSpeaking.value = false
   }
 
+  private fun isIntentionalSpeechStop(err: Throwable): Boolean {
+    if (stopSpeakingRequested || pcmStopRequested) return true
+    return err is CancellationException
+  }
+
   private fun cleanupPlayer() {
     player?.stop()
     player?.release()
@@ -850,12 +988,15 @@ class TalkModeManager(
     streamingSource = null
   }
 
-  private fun cleanupPcmTrack() {
+  private fun cleanupPcmTrack(flush: Boolean = true) {
     val track = pcmTrack ?: return
     try {
-      track.pause()
-      track.flush()
-      track.stop()
+      if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+        track.stop()
+      }
+      if (flush) {
+        track.flush()
+      }
     } catch (_: Throwable) {
       // ignore cleanup errors
     } finally {
@@ -865,11 +1006,44 @@ class TalkModeManager(
   }
 
   private fun shouldInterrupt(transcript: String): Boolean {
+    if (!shouldAllowSpeechInterrupt()) return false
     val trimmed = transcript.trim()
     if (trimmed.length < 3) return false
     val spoken = lastSpokenText?.lowercase()
     if (spoken != null && spoken.contains(trimmed.lowercase())) return false
     return true
+  }
+
+  private fun shouldAllowSpeechInterrupt(): Boolean {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return true
+    return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+      @Suppress("DEPRECATION")
+      audioManager.isBluetoothA2dpOn || audioManager.isBluetoothScoOn || audioManager.isWiredHeadsetOn
+    } else {
+      val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+      if (outputs.isEmpty()) return true
+
+      var hasPrivateOutput = false
+      var hasBuiltinOutput = false
+      for (device in outputs) {
+        when (device.type) {
+          AudioDeviceInfo.TYPE_BUILTIN_EARPIECE,
+          AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> hasBuiltinOutput = true
+          AudioDeviceInfo.TYPE_WIRED_HEADSET,
+          AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+          AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+          AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+          AudioDeviceInfo.TYPE_USB_DEVICE,
+          AudioDeviceInfo.TYPE_USB_ACCESSORY,
+          AudioDeviceInfo.TYPE_USB_HEADSET,
+          AudioDeviceInfo.TYPE_LINE_ANALOG,
+          AudioDeviceInfo.TYPE_LINE_DIGITAL,
+          AudioDeviceInfo.TYPE_AUX_LINE,
+          AudioDeviceInfo.TYPE_HEARING_AID -> hasPrivateOutput = true
+        }
+      }
+      hasPrivateOutput || !hasBuiltinOutput
+    }
   }
 
   private suspend fun reloadConfig() {
@@ -959,8 +1133,8 @@ class TalkModeManager(
     apiKey: String,
     request: ElevenLabsRequest,
     track: AudioTrack,
-  ) {
-    withContext(Dispatchers.IO) {
+  ): Long {
+    return withContext(Dispatchers.IO) {
       val conn = openTtsConnection(voiceId = voiceId, apiKey = apiKey, request = request)
       try {
         val payload = buildRequestPayload(request)
@@ -972,32 +1146,49 @@ class TalkModeManager(
           throw IllegalStateException("ElevenLabs failed: $code $message")
         }
 
+        var totalBytesWritten = 0L
         val buffer = ByteArray(8 * 1024)
         conn.inputStream.use { input ->
           while (true) {
-            if (pcmStopRequested) return@withContext
+            if (pcmStopRequested) return@withContext 0L
             val read = input.read(buffer)
             if (read <= 0) break
             var offset = 0
             while (offset < read) {
-              if (pcmStopRequested) return@withContext
+              if (pcmStopRequested) return@withContext 0L
               val wrote =
                 try {
                   track.write(buffer, offset, read - offset)
                 } catch (err: Throwable) {
-                  if (pcmStopRequested) return@withContext
+                  if (pcmStopRequested) return@withContext 0L
                   throw err
                 }
               if (wrote <= 0) {
-                if (pcmStopRequested) return@withContext
+                if (pcmStopRequested) return@withContext 0L
                 throw IllegalStateException("AudioTrack write failed: $wrote")
               }
+              totalBytesWritten += wrote.toLong()
               offset += wrote
             }
           }
         }
+        totalBytesWritten / 2L
       } finally {
         conn.disconnect()
+      }
+    }
+  }
+
+  private suspend fun waitForPcmDrain(track: AudioTrack, totalFrames: Long, sampleRate: Int) {
+    if (totalFrames <= 0) return
+    withContext(Dispatchers.IO) {
+      val drainDeadline = SystemClock.elapsedRealtime() + 15_000
+      while (!pcmStopRequested && SystemClock.elapsedRealtime() < drainDeadline) {
+        val played = track.playbackHeadPosition.toLong().and(0xFFFFFFFFL)
+        if (played >= totalFrames) break
+        val remainingFrames = totalFrames - played
+        val sleepMs = ((remainingFrames * 1000L) / sampleRate.toLong()).coerceIn(12L, 120L)
+        Thread.sleep(sleepMs)
       }
     }
   }
@@ -1018,7 +1209,7 @@ class TalkModeManager(
     val conn = url.openConnection() as HttpURLConnection
     conn.requestMethod = "POST"
     conn.connectTimeout = 30_000
-    conn.readTimeout = 30_000
+    conn.readTimeout = 120_000
     conn.setRequestProperty("Content-Type", "application/json")
     conn.setRequestProperty("Accept", resolveAcceptHeader(request.outputFormat))
     conn.setRequestProperty("xi-api-key", apiKey)
@@ -1152,7 +1343,7 @@ class TalkModeManager(
   }
 
   private fun ensureInterruptListener() {
-    if (!interruptOnSpeech || !_isEnabled.value) return
+    if (!interruptOnSpeech || !_isEnabled.value || !shouldAllowSpeechInterrupt()) return
     mainHandler.post {
       if (stopRequested) return@post
       if (!SpeechRecognizer.isRecognitionAvailable(context)) return@post
@@ -1258,11 +1449,13 @@ class TalkModeManager(
       override fun onBufferReceived(buffer: ByteArray?) {}
 
       override fun onEndOfSpeech() {
+        clearListenWatchdog()
         scheduleRestart()
       }
 
       override fun onError(error: Int) {
         if (stopRequested) return
+        clearListenWatchdog()
         _isListening.value = false
         if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
           _statusText.value = "Microphone permission required"
@@ -1285,9 +1478,12 @@ class TalkModeManager(
       }
 
       override fun onResults(results: Bundle?) {
+        clearListenWatchdog()
         val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
         list.firstOrNull()?.let { handleTranscript(it, isFinal = true) }
-        scheduleRestart()
+        if (!finalizeInFlight) {
+          scheduleRestart()
+        }
       }
 
       override fun onPartialResults(partialResults: Bundle?) {
