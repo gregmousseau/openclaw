@@ -116,6 +116,7 @@ class TalkModeManager(
   private var pendingFinal: CompletableDeferred<Boolean>? = null
   private val completedRunsLock = Any()
   private val completedRunStates = LinkedHashMap<String, Boolean>()
+  private val completedRunTexts = LinkedHashMap<String, String>()
   private var chatSubscribedSessionKey: String? = null
 
   private var player: MediaPlayer? = null
@@ -179,7 +180,8 @@ class TalkModeManager(
         val prompt = buildPrompt(command)
         val runId = sendChat(prompt, session)
         val ok = waitForChatFinal(runId, timeoutMs = waitForFinalTimeoutMs())
-        val assistant = waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
+        val assistant = consumeRunText(runId)
+          ?: waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
         if (!assistant.isNullOrBlank()) {
           _statusText.value = "Speaking…"
           playAssistant(assistant)
@@ -211,6 +213,18 @@ class TalkModeManager(
         "aborted", "error" -> false
         else -> null
       } ?: return
+    // Cache text from final event so we never need to poll chat.history
+    if (terminal) {
+      val text = extractTextFromChatEventMessage(obj["message"])
+      if (!text.isNullOrBlank()) {
+        synchronized(completedRunsLock) {
+          completedRunTexts[runId] = text
+          while (completedRunTexts.size > maxCachedRunCompletions) {
+            completedRunTexts.entries.firstOrNull()?.let { completedRunTexts.remove(it.key) }
+          }
+        }
+      }
+    }
     cacheRunCompletion(runId, terminal)
 
     if (runId != pendingRunId) return
@@ -277,6 +291,7 @@ class TalkModeManager(
     pendingFinal = null
     synchronized(completedRunsLock) {
       completedRunStates.clear()
+      completedRunTexts.clear()
     }
 
     mainHandler.post {
@@ -453,7 +468,9 @@ class TalkModeManager(
       if (!ok) {
         Log.w(tag, "chat final not observed runId=$runId; attempting history fallback")
       }
-      val assistant = waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
+      // Use text cached from the final event first — avoids chat.history polling
+      val assistant = consumeRunText(runId)
+        ?: waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
       if (assistant.isNullOrBlank()) {
         _statusText.value = "No reply"
         Log.w(tag, "assistant text timeout runId=$runId")
@@ -573,6 +590,20 @@ class TalkModeManager(
     synchronized(completedRunsLock) {
       return completedRunStates.remove(runId)
     }
+  }
+
+  private fun consumeRunText(runId: String): String? {
+    synchronized(completedRunsLock) {
+      return completedRunTexts.remove(runId)
+    }
+  }
+
+  private fun extractTextFromChatEventMessage(messageEl: JsonElement?): String? {
+    val msg = messageEl?.asObjectOrNull() ?: return null
+    val content = msg["content"] as? JsonArray ?: return null
+    return content.mapNotNull { entry ->
+      entry.asObjectOrNull()?.get("text")?.asStringOrNull()?.trim()
+    }.filter { it.isNotEmpty() }.joinToString("\n").takeIf { it.isNotBlank() }
   }
 
   private suspend fun waitForAssistantText(
