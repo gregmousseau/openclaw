@@ -146,6 +146,9 @@ class TalkModeManager(
 
   private var pendingRunId: String? = null
   private var pendingFinal: CompletableDeferred<Boolean>? = null
+  private val completedRunsLock = Any()
+  private val completedRunStates = LinkedHashMap<String, Boolean>()
+  private val completedRunTexts = LinkedHashMap<String, String>()
   private var chatSubscribedSessionKey: String? = null
 
   private var player: MediaPlayer? = null
@@ -194,6 +197,35 @@ class TalkModeManager(
     }
   }
 
+  /**
+   * Speak a wake-word command through TalkMode's full pipeline:
+   * chat.send → wait for final → read assistant text → TTS.
+   * Calls [onComplete] when done so the caller can disable TalkMode and re-arm VoiceWake.
+   */
+  fun speakWakeCommand(command: String, onComplete: () -> Unit) {
+    scope.launch {
+      try {
+        reloadConfig()
+        subscribeChatIfNeeded(session = session, sessionKey = mainSessionKey.ifBlank { "main" })
+        val startedAt = System.currentTimeMillis().toDouble() / 1000.0
+        val prompt = buildPrompt(command)
+        val runId = sendChat(prompt, session)
+        val ok = waitForChatFinal(runId, timeoutMs = waitForFinalTimeoutMs())
+        val assistant = consumeRunText(runId)
+          ?: waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
+        if (!assistant.isNullOrBlank()) {
+          _statusText.value = "Speaking…"
+          playAssistant(assistant)
+        } else {
+          _statusText.value = "No reply"
+        }
+      } catch (err: Throwable) {
+        Log.w(tag, "speakWakeCommand failed: ${err.message}")
+      }
+      onComplete()
+    }
+  }
+
   fun handleGatewayEvent(event: String, payloadJson: String?) {
     if (event != "chat") return
     if (payloadJson.isNullOrBlank()) return
@@ -214,6 +246,18 @@ class TalkModeManager(
         "aborted", "error" -> false
         else -> null
       } ?: return
+    // Cache text from final event so we never need to poll chat.history
+    if (terminal) {
+      val text = extractTextFromChatEventMessage(obj["message"])
+      if (!text.isNullOrBlank()) {
+        synchronized(completedRunsLock) {
+          completedRunTexts[runId] = text
+          while (completedRunTexts.size > maxCachedRunCompletions) {
+            completedRunTexts.entries.firstOrNull()?.let { completedRunTexts.remove(it.key) }
+          }
+        }
+      }
+    }
     cacheRunCompletion(runId, terminal)
 
     if (runId != pendingRunId) return
@@ -271,6 +315,13 @@ class TalkModeManager(
     stopSpeaking()
     _usingFallbackTts.value = false
     chatSubscribedSessionKey = null
+    pendingRunId = null
+    pendingFinal?.cancel()
+    pendingFinal = null
+    synchronized(completedRunsLock) {
+      completedRunStates.clear()
+      completedRunTexts.clear()
+    }
 
     mainHandler.post {
       recognizer?.cancel()
@@ -396,7 +447,9 @@ class TalkModeManager(
       if (!ok) {
         Log.w(tag, "chat final timeout runId=$runId; attempting history fallback")
       }
-      val assistant = waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
+      // Use text cached from the final event first — avoids chat.history polling
+      val assistant = consumeRunText(runId)
+        ?: waitForAssistantText(session, startedAt, if (ok) 12_000 else 25_000)
       if (assistant.isNullOrBlank()) {
         _statusText.value = "No reply"
         Log.w(tag, "assistant text timeout runId=$runId")
@@ -481,6 +534,36 @@ class TalkModeManager(
       pendingRunId = null
     }
     return result
+  }
+
+  private fun cacheRunCompletion(runId: String, isFinal: Boolean) {
+    synchronized(completedRunsLock) {
+      completedRunStates[runId] = isFinal
+      while (completedRunStates.size > maxCachedRunCompletions) {
+        val first = completedRunStates.entries.firstOrNull() ?: break
+        completedRunStates.remove(first.key)
+      }
+    }
+  }
+
+  private fun consumeRunCompletion(runId: String): Boolean? {
+    synchronized(completedRunsLock) {
+      return completedRunStates.remove(runId)
+    }
+  }
+
+  private fun consumeRunText(runId: String): String? {
+    synchronized(completedRunsLock) {
+      return completedRunTexts.remove(runId)
+    }
+  }
+
+  private fun extractTextFromChatEventMessage(messageEl: JsonElement?): String? {
+    val msg = messageEl?.asObjectOrNull() ?: return null
+    val content = msg["content"] as? JsonArray ?: return null
+    return content.mapNotNull { entry ->
+      entry.asObjectOrNull()?.get("text")?.asStringOrNull()?.trim()
+    }.filter { it.isNotEmpty() }.joinToString("\n").takeIf { it.isNotBlank() }
   }
 
   private suspend fun waitForAssistantText(
@@ -653,7 +736,7 @@ class TalkModeManager(
     player.setAudioAttributes(
       AudioAttributes.Builder()
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+        .setUsage(AudioAttributes.USAGE_MEDIA)
         .build(),
     )
     player.setOnPreparedListener {
@@ -718,7 +801,7 @@ class TalkModeManager(
       AudioTrack(
         AudioAttributes.Builder()
           .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-          .setUsage(AudioAttributes.USAGE_ASSISTANT)
+          .setUsage(AudioAttributes.USAGE_MEDIA)
           .build(),
         AudioFormat.Builder()
           .setSampleRate(sampleRate)
@@ -871,7 +954,7 @@ class TalkModeManager(
       val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
         .setAudioAttributes(
           AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+            .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         )
@@ -1016,6 +1099,7 @@ class TalkModeManager(
         conn.outputStream.use { it.write(payload.toByteArray()) }
 
         val code = conn.responseCode
+        Log.d(tag, "elevenlabs http code=$code voiceId=$voiceId format=${request.outputFormat} keyLen=${apiKey.length} keyPrefix=${apiKey.take(8)}")
         if (code >= 400) {
           val message = conn.errorStream?.readBytes()?.toString(Charsets.UTF_8) ?: ""
           sink.fail()
@@ -1264,8 +1348,9 @@ class TalkModeManager(
     val trimmed = preferred?.trim().orEmpty()
     if (trimmed.isNotEmpty()) {
       val resolved = resolveVoiceAlias(trimmed)
-      if (resolved != null) return resolved
-      Log.w(tag, "unknown voice alias $trimmed")
+      // If it resolves as an alias, use the alias target.
+      // Otherwise treat it as a direct voice ID (e.g. "21m00Tcm4TlvDq8ikWAM").
+      return resolved ?: trimmed
     }
     fallbackVoiceId?.let { return it }
 
