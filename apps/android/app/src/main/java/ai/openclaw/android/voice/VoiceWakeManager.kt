@@ -2,43 +2,51 @@ package ai.openclaw.android.voice
 
 import android.content.Context
 import android.content.Intent
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import android.util.Log
-import kotlin.math.sqrt
 
 /**
- * Always-on wake word manager, refactored for reliability.
+ * Always-on wake word manager using continuous SpeechRecognizer cycling.
  *
- * Key improvements:
- * - Robust SpeechRecognizer lifecycle: recreates recognizer on fatal errors.
- * - Partial results processing: faster wake word detection.
- * - State management: clearer, less prone to race conditions.
- * - Error handling: detailed error logging and recovery.
+ * Previous architecture: VAD → start recognizer → user must repeat themselves
+ * because the recognizer wasn't ready for the first utterance.
+ *
+ * New architecture: SpeechRecognizer is always actively listening. Each session:
+ *   startListening → partials/results checked for wake word → restart immediately.
+ * No VAD gate — zero latency between first sound and recognition start.
+ *
+ * Trade-off: slightly more battery vs VAD approach. Acceptable for a foreground
+ * voice assistant. The proper long-term solution is Porcupine or similar on-device
+ * wake word engine (processes audio frames locally, no cloud calls until triggered).
  */
 class VoiceWakeManager(
     private val context: Context,
     private val scope: CoroutineScope,
     private val onCommand: suspend (String) -> Unit,
 ) {
-  companion object {
-    private const val tag = "VoiceWakeManager"
-  }
+    companion object {
+        private const val tag = "VoiceWake"
+        // How long to wait before restarting the listen cycle after a normal session end.
+        private const val RESTART_DELAY_MS = 100L
+        // How long to wait after a recognizer error before restarting.
+        private const val ERROR_RESTART_DELAY_MS = 500L
+        // Silence duration before the recognizer returns (faster cycling = lower latency).
+        private const val SILENCE_TIMEOUT_MS = 1800L
+        // Cool-down after wake word dispatch — avoids re-triggering while TalkMode runs.
+        private const val WAKE_COOLDOWN_MS = 10_000L
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _isListening = MutableStateFlow(false)
@@ -50,26 +58,13 @@ class VoiceWakeManager(
     var triggerWords: List<String> = emptyList()
         private set
 
-    // --- AudioRecord VAD ---
-    private val sampleRate = 16000
-    private val channelConfig = AudioFormat.CHANNEL_IN_MONO
-    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-    private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        .coerceAtLeast(3200)
-
-    // Lowered RMS threshold for better sensitivity in quieter environments.
-    private val speechRmsThreshold = 600f
-    // Increased frame count to prevent triggers from short, sharp noises.
-    private val speechFramesToTrigger = 4
-    private val silenceFramesToReset = 5
-
-    private var vadJob: Job? = null
-
-    // --- SpeechRecognizer ---
     private var recognizer: SpeechRecognizer? = null
-    @Volatile private var recognizerActive = false
-    private var commandJustDispatched = false
     private var stopRequested = false
+    private var suppressedByTalk = false
+    private var wakeCooldownJob: Job? = null
+    private var restartJob: Job? = null
+    // Guard: ignore recognizer callbacks after intentional destroy
+    private var ignoreCallbacks = false
 
     fun setTriggerWords(words: List<String>) {
         triggerWords = words
@@ -79,33 +74,126 @@ class VoiceWakeManager(
         mainHandler.post {
             if (_isListening.value) return@post
             stopRequested = false
-
             if (!SpeechRecognizer.isRecognitionAvailable(context)) {
                 _statusText.value = "Speech recognizer unavailable"
                 return@post
             }
-            
-            destroyRecognizer() // Ensure clean state
-            recognizer = createRecognizer()
-            recognizerActive = false
+            Log.d(tag, "start")
             _isListening.value = true
             _statusText.value = "Listening"
-            startVad()
+            startCycle()
         }
     }
 
     fun stop(statusText: String = "Off") {
         stopRequested = true
-        vadJob?.cancel()
-        vadJob = null
+        wakeCooldownJob?.cancel()
+        restartJob?.cancel()
         mainHandler.post {
+            ignoreCallbacks = true
             destroyRecognizer()
-            recognizerActive = false
             _isListening.value = false
             _statusText.value = statusText
         }
     }
-    
+
+    fun setSuppressedByTalk(suppressed: Boolean) {
+        if (suppressedByTalk == suppressed) return
+        suppressedByTalk = suppressed
+        if (suppressed) {
+            Log.d(tag, "suppressed by talk")
+            restartJob?.cancel()
+            mainHandler.post {
+                ignoreCallbacks = true
+                recognizer?.cancel()
+                _statusText.value = "Paused"
+            }
+        } else {
+            Log.d(tag, "resumed from talk suppression")
+            scheduleRestart(delayMs = 1500L)
+        }
+    }
+
+    // ── Core cycling ──────────────────────────────────────────────────────────
+
+    private fun startCycle() {
+        if (stopRequested || suppressedByTalk) return
+        mainHandler.post {
+            if (stopRequested || suppressedByTalk) return@post
+
+            // Recreate recognizer if needed (first start or after RECOGNIZER_BUSY destroy).
+            if (recognizer == null) {
+                recognizer = createRecognizer()
+            }
+            ignoreCallbacks = false
+
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+                // Short silence window → faster cycling when nobody is talking.
+                // Cloud recognition (no PREFER_OFFLINE) gives better partial results
+                // and more accurate short-phrase detection for wake words.
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, SILENCE_TIMEOUT_MS)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+            }
+            try {
+                recognizer?.startListening(intent)
+                Log.d(tag, "cycle started")
+            } catch (e: Exception) {
+                Log.w(tag, "startListening failed: ${e.message}")
+                scheduleRestart(ERROR_RESTART_DELAY_MS)
+            }
+        }
+    }
+
+    private fun scheduleRestart(delayMs: Long = RESTART_DELAY_MS) {
+        if (stopRequested) return
+        restartJob?.cancel()
+        restartJob = scope.launch {
+            delay(delayMs)
+            if (!stopRequested && !suppressedByTalk) {
+                startCycle()
+            }
+        }
+    }
+
+    private fun handleText(text: String, isFinal: Boolean) {
+        if (text.isBlank()) return
+        _statusText.value = "Heard: ${text.take(40)}"
+        val command = VoiceWakeCommandExtractor.extractCommand(text, triggerWords) ?: return
+        Log.d(tag, "wake word matched command='$command' isFinal=$isFinal")
+        dispatch(command)
+    }
+
+    private fun dispatch(command: String) {
+        wakeCooldownJob?.cancel()
+        restartJob?.cancel()
+        // Stop the current recognizer cycle silently while TalkMode handles things.
+        mainHandler.post {
+            ignoreCallbacks = true
+            recognizer?.cancel()
+            _statusText.value = "Triggered!"
+        }
+        scope.launch { onCommand(command) }
+        // Re-arm after cooldown (TalkMode will also call setSuppressedByTalk).
+        wakeCooldownJob = scope.launch {
+            delay(WAKE_COOLDOWN_MS)
+            if (!stopRequested && !suppressedByTalk) {
+                scheduleRestart(0)
+            }
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private fun createRecognizer(): SpeechRecognizer {
+        val r = SpeechRecognizer.createSpeechRecognizer(context)
+        r.setRecognitionListener(listener)
+        return r
+    }
+
     private fun destroyRecognizer() {
         recognizer?.cancel()
         recognizer?.setRecognitionListener(null)
@@ -113,233 +201,76 @@ class VoiceWakeManager(
         recognizer = null
     }
 
-    private var suppressedByTalk = false
+    // ── RecognitionListener ───────────────────────────────────────────────────
 
-    fun setSuppressedByTalk(suppressed: Boolean) {
-        if (suppressedByTalk == suppressed) return
-        suppressedByTalk = suppressed
-        if (suppressed) {
-            vadJob?.cancel()
-            vadJob = null
-            mainHandler.post {
-                recognizer?.cancel()
-                recognizerActive = false
-                _isListening.value = false
-                _statusText.value = "Paused"
-            }
-        } else {
-            scope.launch {
-                delay(1500L) // Shorter delay after TTS
-                mainHandler.post {
-                    if (!stopRequested && !suppressedByTalk) {
-                        _isListening.value = true
-                        _statusText.value = "Listening"
-                        startVad()
-                    }
-                }
-            }
-        }
-    }
-
-    private fun startVad() {
-        if (suppressedByTalk || vadJob?.isActive == true) return
-        vadJob = scope.launch {
-            val ar = try {
-                AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                    sampleRate, channelConfig, audioFormat, bufferSize * 4,
-                ).also { it.startRecording() }
-            } catch (e: Exception) {
-                Log.e(tag, "VAD AudioRecord creation failed")
-                _statusText.value = "Mic unavailable"
-                _isListening.value = false
-                return@launch
-            }
-
-            val buf = ShortArray(bufferSize)
-            var speechFrames = 0
-            var silenceFrames = 0
-
-            while (isActive && !stopRequested && !recognizerActive) {
-                try {
-                    val read = ar.read(buf, 0, bufferSize)
-                    if (read <= 0) {
-                        delay(30)
-                        continue
-                    }
-
-                    val rms = computeRms(buf, read)
-                    if (rms > speechRmsThreshold) {
-                        silenceFrames = 0
-                        speechFrames++
-                        if (speechFrames >= speechFramesToTrigger) {
-                            ar.stop()
-                            ar.release()
-                            activateSpeechRecognizer()
-                            return@launch
-                        }
-                    } else {
-                        silenceFrames++
-                        if (silenceFrames >= silenceFramesToReset) speechFrames = 0
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "VAD read loop error")
-                    break 
-                }
-            }
-
-            ar.stop()
-            ar.release()
-        }
-    }
-
-    private fun computeRms(buf: ShortArray, count: Int): Float {
-        var sum = 0.0
-        for (i in 0 until count) sum += buf[i].toDouble() * buf[i]
-        return sqrt(sum / count).toFloat()
-    }
-
-    private fun activateSpeechRecognizer() {
-        if (stopRequested || recognizerActive) return
-        recognizerActive = true
-        mainHandler.post {
-            if (stopRequested) {
-                recognizerActive = false
-                return@post
-            }
-            val r = recognizer ?: run {
-                recognizerActive = false
-                restartVad(500L)
-                return@post
-            }
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                }
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
-            }
-            try {
-                r.startListening(intent)
-            } catch (e: Exception) {
-                Log.e(tag, "startListening failed")
-                recognizerActive = false
-                restartVad(500L)
-            }
-        }
-    }
-
-    private fun restartVad(delayMs: Long) {
-        if (stopRequested) return
-        recognizerActive = false
-        scope.launch {
-            delay(delayMs)
-            if (!stopRequested && !suppressedByTalk) {
-                startVad()
-            }
-        }
-    }
-    
-    private fun scheduleVadRestart(delayMs: Long = 200L) {
-        // Centralized restart logic
-        if (recognizerActive) {
-            mainHandler.post { recognizer?.cancel() }
-        }
-        restartVad(delayMs)
-    }
-
-    private fun createRecognizer(): SpeechRecognizer {
-        val recognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-        ) {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        } else {
-            SpeechRecognizer.createSpeechRecognizer(context)
-        }
-        recognizer.setRecognitionListener(recognitionListener)
-        return recognizer
-    }
-    
-    private fun handleTranscription(text: String, isPartial: Boolean): Boolean {
-        if (commandJustDispatched) return false
-        _statusText.value = "Heard: $text"
-        val command = VoiceWakeCommandExtractor.extractCommand(text, triggerWords) ?: return false
-        
-        commandJustDispatched = true
-        scope.launch { onCommand(command) }
-        _statusText.value = "Triggered: $command"
-        
-        // After dispatching, give a long pause before re-arming VAD
-        mainHandler.postDelayed({ commandJustDispatched = false }, 10_000L)
-        scheduleVadRestart(delayMs = 10_000L)
-        return true
-    }
-
-    private val recognitionListener = object : RecognitionListener {
+    private val listener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
-            _statusText.value = "Listening..."
+            if (ignoreCallbacks) return
+            _statusText.value = "Listening"
         }
+
         override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {
-             _statusText.value = "Thinking..."
+        override fun onEndOfSpeech() {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            if (ignoreCallbacks) return
+            val text = partialResults
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull() ?: return
+            handleText(text, isFinal = false)
+        }
+
+        override fun onResults(results: Bundle?) {
+            if (ignoreCallbacks) return
+            val text = results
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull() ?: ""
+            if (text.isNotBlank()) handleText(text, isFinal = true)
+            // Restart immediately — no wake match, keep cycling.
+            scheduleRestart(RESTART_DELAY_MS)
         }
 
         override fun onError(error: Int) {
-            if (stopRequested) return
-            
-            val errorMessage = when (error) {
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT, SpeechRecognizer.ERROR_NETWORK -> "Network error"
-                SpeechRecognizer.ERROR_AUDIO -> "Audio error"
-                SpeechRecognizer.ERROR_SERVER -> "Server error"
-                SpeechRecognizer.ERROR_CLIENT -> "Client error"
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech detected"
-                SpeechRecognizer.ERROR_NO_MATCH -> "No match"
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Mic permission required"
-                else -> "Error: $error"
+            if (ignoreCallbacks) return
+            val msg = when (error) {
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "timeout"
+                SpeechRecognizer.ERROR_NO_MATCH -> "no match"
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "busy"
+                SpeechRecognizer.ERROR_AUDIO -> "audio"
+                SpeechRecognizer.ERROR_NETWORK -> "network"
+                SpeechRecognizer.ERROR_SERVER -> "server"
+                SpeechRecognizer.ERROR_CLIENT -> "client"
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "permissions"
+                else -> "error($error)"
             }
-            Log.w(tag, "SpeechRecognizer error: $errorMessage")
-            _statusText.value = "Listening"
+            Log.d(tag, "onError: $msg")
 
             if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                 stop("Microphone permission required")
                 return
             }
 
-            // For busy errors, especially on newer Android, a full reset is often needed.
             if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+                // Full destroy+recreate required on busy.
                 mainHandler.post {
                     destroyRecognizer()
                     recognizer = createRecognizer()
-                    scheduleVadRestart(500L)
                 }
-            } else {
-                scheduleVadRestart(500L)
+                scheduleRestart(ERROR_RESTART_DELAY_MS)
+                return
             }
-        }
 
-        override fun onResults(results: Bundle?) {
-            val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            if (!text.isNullOrEmpty()) {
-                handleTranscription(text, isPartial = false)
+            // SPEECH_TIMEOUT and NO_MATCH are normal — nobody was talking.
+            // Restart quickly. Other errors get a longer back-off.
+            val delay = when (error) {
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+                SpeechRecognizer.ERROR_NO_MATCH -> RESTART_DELAY_MS
+                else -> ERROR_RESTART_DELAY_MS
             }
-            if (!commandJustDispatched) {
-                 scheduleVadRestart(3000L)
-            }
+            scheduleRestart(delay)
         }
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            if (!text.isNullOrEmpty()) {
-                handleTranscription(text, isPartial = true)
-            }
-        }
-        override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 }
