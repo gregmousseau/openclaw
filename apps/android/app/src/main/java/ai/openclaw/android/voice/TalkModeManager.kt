@@ -57,7 +57,7 @@ class TalkModeManager(
     private const val tag = "TalkMode"
     private const val defaultModelIdFallback = "eleven_v3"
     private const val defaultOutputFormatFallback = "pcm_24000"
-    private const val silenceWindowMs = 900L
+    private const val silenceWindowMs = 500L
     private const val listenWatchdogMs = 12_000L
     private const val chatFinalWaitWithSubscribeMs = 45_000L
     private const val chatFinalWaitWithoutSubscribeMs = 6_000L
@@ -277,9 +277,10 @@ class TalkModeManager(
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1100L)
+        // Use cloud recognition — it handles natural speech and pauses better
+        // than on-device which cuts off aggressively after short silences.
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
       }
 
     if (markListening) {
@@ -362,9 +363,9 @@ class TalkModeManager(
 
     if (isFinal) {
       lastTranscript = trimmed
-      if (trimmed.isNotEmpty()) {
-        requestTranscriptFinalize(trimmed)
-      }
+      // Don't finalize immediately — let the silence monitor trigger after
+      // silenceWindowMs. This allows the recognizer to fire onResults and
+      // still give the user a natural pause before we send.
     }
   }
 
