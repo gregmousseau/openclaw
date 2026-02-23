@@ -65,6 +65,9 @@ class VoiceWakeManager(
     private var restartJob: Job? = null
     // Guard: ignore recognizer callbacks after intentional destroy
     private var ignoreCallbacks = false
+    // Wake word detected in partial results — hold the best command seen so far,
+    // wait for the FINAL result so we dispatch the full sentence not just the first word.
+    private var pendingWakeCommand: String? = null
 
     fun setTriggerWords(words: List<String>) {
         triggerWords = words
@@ -87,6 +90,7 @@ class VoiceWakeManager(
 
     fun stop(statusText: String = "Off") {
         stopRequested = true
+        pendingWakeCommand = null
         wakeCooldownJob?.cancel()
         restartJob?.cancel()
         mainHandler.post {
@@ -162,8 +166,24 @@ class VoiceWakeManager(
     private fun handleText(text: String, isFinal: Boolean) {
         if (text.isBlank()) return
         _statusText.value = "Heard: ${text.take(40)}"
-        val command = VoiceWakeCommandExtractor.extractCommand(text, triggerWords) ?: return
-        Log.d(tag, "wake word matched command='$command' isFinal=$isFinal")
+        val command = VoiceWakeCommandExtractor.extractCommand(text, triggerWords)
+        if (command == null) {
+            // If we had a pending wake from an earlier partial but the latest
+            // longer partial lost it (shouldn't happen, but be safe), clear it.
+            if (isFinal) pendingWakeCommand = null
+            return
+        }
+        if (!isFinal) {
+            // Wake word detected in partial — save the command but wait for the
+            // final result to capture the full sentence (not just the first word).
+            Log.d(tag, "wake detected in partial, waiting for final: '$command'")
+            pendingWakeCommand = command
+            _statusText.value = "Wake detected..."
+            return
+        }
+        // Final result with wake word — dispatch the full command.
+        Log.d(tag, "wake word matched (final) command='$command'")
+        pendingWakeCommand = null
         dispatch(command)
     }
 
@@ -228,8 +248,19 @@ class VoiceWakeManager(
             val text = results
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull() ?: ""
-            if (text.isNotBlank()) handleText(text, isFinal = true)
-            // Restart immediately — no wake match, keep cycling.
+            if (text.isNotBlank()) {
+                handleText(text, isFinal = true)
+            }
+            // If handleText didn't dispatch (final had no wake match) but we had
+            // a pending wake from a partial — dispatch that fallback now.
+            val pending = pendingWakeCommand
+            if (pending != null) {
+                Log.d(tag, "final lost wake word; dispatching from partial: '$pending'")
+                pendingWakeCommand = null
+                dispatch(pending)
+                return
+            }
+            // No wake match at all — keep cycling.
             scheduleRestart(RESTART_DELAY_MS)
         }
 
@@ -250,6 +281,16 @@ class VoiceWakeManager(
 
             if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                 stop("Microphone permission required")
+                return
+            }
+
+            // If we detected a wake word in a partial but the session errored
+            // before producing a final result, dispatch the partial command anyway.
+            val pending = pendingWakeCommand
+            if (pending != null) {
+                Log.d(tag, "error during pending wake; dispatching partial: '$pending'")
+                pendingWakeCommand = null
+                dispatch(pending)
                 return
             }
 
