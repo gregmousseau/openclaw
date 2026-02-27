@@ -1156,6 +1156,15 @@ private const val defaultTalkProvider = "elevenlabs"
     }
   }
 
+  /** Stop any active TTS immediately — call when user taps mic to barge in. */
+  fun stopTts() {
+    streamingTts?.stop()
+    streamingTts = null
+    stopSpeaking(resetInterrupt = true)
+    _isSpeaking.value = false
+    _statusText.value = "Listening"
+  }
+
   private fun stopSpeaking(resetInterrupt: Boolean = true) {
     stopSpeakingRequested = true
     pcmStopRequested = true

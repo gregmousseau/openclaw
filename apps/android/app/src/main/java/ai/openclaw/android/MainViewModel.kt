@@ -129,6 +129,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     runtime.setCanvasDebugStatusEnabled(value)
   }
 
+  fun setVoiceScreenActive(active: Boolean) {
+    runtime.setVoiceScreenActive(active)
+  }
+
   fun setMicEnabled(enabled: Boolean) {
     runtime.setMicEnabled(enabled)
   }

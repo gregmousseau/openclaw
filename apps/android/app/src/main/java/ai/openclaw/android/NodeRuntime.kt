@@ -492,8 +492,7 @@ class NodeRuntime(context: Context) {
         // TalkModeManager plays TTS on assistant responses.
         micCapture.setMicEnabled(enabled)
         if (enabled) {
-          // Enable TTS and subscribe to chat events.
-          // ttsOnAllResponses stays true even after mic off — response may arrive after send.
+          // Mic on = user is on voice screen and wants TTS responses.
           talkMode.ttsOnAllResponses = true
           scope.launch { talkMode.ensureChatSubscribed() }
         }
@@ -604,8 +603,26 @@ class NodeRuntime(context: Context) {
     prefs.setCanvasDebugStatusEnabled(value)
   }
 
+  fun setVoiceScreenActive(active: Boolean) {
+    android.util.Log.d("NodeRuntime", "setVoiceScreenActive active=$active")
+    if (!active) {
+      // User left voice screen — stop mic and TTS
+      talkMode.ttsOnAllResponses = false
+      talkMode.stopTts()
+      micCapture.setMicEnabled(false)
+      prefs.setTalkEnabled(false)
+    }
+    // Don't re-enable on active=true; mic toggle drives that
+  }
+
   fun setMicEnabled(value: Boolean) {
     prefs.setTalkEnabled(value)
+    if (value) {
+      // Tapping mic on interrupts any active TTS (barge-in)
+      talkMode.stopTts()
+      talkMode.ttsOnAllResponses = true
+      scope.launch { talkMode.ensureChatSubscribed() }
+    }
     micCapture.setMicEnabled(value)
     externalAudioCaptureActive.value = value
   }
