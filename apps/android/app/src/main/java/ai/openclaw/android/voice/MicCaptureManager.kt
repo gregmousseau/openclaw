@@ -101,7 +101,7 @@ class MicCaptureManager(
       stop()
       // Capture any partial transcript that didn't get a final result from the recognizer
       val partial = _liveTranscript.value?.trim().orEmpty()
-      if (partial.isNotEmpty() && sessionSegments.isEmpty()) {
+      if (partial.isNotEmpty() && sessionSegments.lastOrNull() != partial) {
         sessionSegments.add(partial)
       }
       flushSessionToQueue()
