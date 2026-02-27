@@ -61,9 +61,6 @@ class TalkModeManager(
     private const val defaultOutputFormatFallback = "pcm_24000"
 private const val defaultTalkProvider = "elevenlabs"
     private const val silenceWindowMs = 500L
-    private const val listenWatchdogMs = 12_000L
-    private const val chatFinalWaitWithSubscribeMs = 45_000L
-    private const val chatFinalWaitWithoutSubscribeMs = 6_000L
     private const val maxCachedRunCompletions = 128
 
     internal data class TalkProviderConfigSelection(
