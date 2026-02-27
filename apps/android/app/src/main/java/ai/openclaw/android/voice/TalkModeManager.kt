@@ -185,12 +185,6 @@ private const val defaultTalkProvider = "elevenlabs"
     }
   }
 
-  fun setElevenLabsConfig(apiKey: String?, voiceId: String?) {
-    this.apiKey = apiKey?.trim()?.takeIf { it.isNotEmpty() }
-    Log.d(tag, "setElevenLabsConfig voiceId=$voiceId")
-    this.defaultVoiceId = voiceId?.trim()?.takeIf { it.isNotEmpty() }
-  }
-
   fun setMainSessionKey(sessionKey: String?) {
     val trimmed = sessionKey?.trim().orEmpty()
     if (trimmed.isEmpty()) return
