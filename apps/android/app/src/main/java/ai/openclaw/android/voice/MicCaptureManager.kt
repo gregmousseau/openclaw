@@ -91,10 +91,14 @@ class MicCaptureManager(
   private var pendingRunTimeoutJob: Job? = null
   private var stopRequested = false
 
+  private var stopDelayJob: kotlinx.coroutines.Job? = null
+
   fun setMicEnabled(enabled: Boolean) {
     if (_micEnabled.value == enabled) return
     _micEnabled.value = enabled
     if (enabled) {
+      stopDelayJob?.cancel()
+      stopDelayJob = null
       start()
       sendQueuedIfIdle()
     } else {
@@ -104,7 +108,7 @@ class MicCaptureManager(
         stop()
         // Capture any partial transcript that didn't get a final result from the recognizer
         val partial = _liveTranscript.value?.trim().orEmpty()
-        if (partial.isNotEmpty() && sessionSegments.isEmpty()) {
+        if (partial.isNotEmpty() && sessionSegments.lastOrNull() != partial) {
           sessionSegments.add(partial)
         }
         flushSessionToQueue()

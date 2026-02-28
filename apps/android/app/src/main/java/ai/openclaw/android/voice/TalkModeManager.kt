@@ -61,9 +61,6 @@ class TalkModeManager(
     private const val defaultOutputFormatFallback = "pcm_24000"
 private const val defaultTalkProvider = "elevenlabs"
     private const val silenceWindowMs = 500L
-    private const val listenWatchdogMs = 12_000L
-    private const val chatFinalWaitWithSubscribeMs = 45_000L
-    private const val chatFinalWaitWithoutSubscribeMs = 6_000L
     private const val maxCachedRunCompletions = 128
 
     internal data class TalkProviderConfigSelection(
@@ -188,12 +185,6 @@ private const val defaultTalkProvider = "elevenlabs"
     }
   }
 
-  fun setElevenLabsConfig(apiKey: String?, voiceId: String?) {
-    this.apiKey = apiKey?.trim()?.takeIf { it.isNotEmpty() }
-    Log.d(tag, "setElevenLabsConfig voiceId=$voiceId")
-    this.defaultVoiceId = voiceId?.trim()?.takeIf { it.isNotEmpty() }
-  }
-
   suspend fun ensureChatSubscribed() {
     reloadConfig()
     subscribeChatIfNeeded(session = session, sessionKey = mainSessionKey.ifBlank { "main" })
@@ -312,6 +303,7 @@ private const val defaultTalkProvider = "elevenlabs"
           modelId = streamModel2, outputFormat = "pcm_24000", sampleRate = 24000,
         )
         streamingTts = newTts
+        requestAudioFocusForTts()
         newTts.start()
         newTts.sendText(text)
         Log.d(tag, "streaming TTS restarted with new text")
@@ -326,9 +318,9 @@ private const val defaultTalkProvider = "elevenlabs"
     scope.launch {
       delay(500)
       while (tts.isPlaying.value) { delay(200) }
+      abandonAudioFocus()
       _isSpeaking.value = false
       _statusText.value = "Ready"
-      streamingTts = null
     }
   }
 
@@ -1159,6 +1151,7 @@ private const val defaultTalkProvider = "elevenlabs"
   fun stopTts() {
     streamingTts?.stop()
     streamingTts = null
+    abandonAudioFocus()
     stopSpeaking(resetInterrupt = true)
     _isSpeaking.value = false
     _statusText.value = "Listening"
